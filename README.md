@@ -9,8 +9,8 @@
 - 像聊天一样提问线性表问题
 - 从 `knowledge/` 目录检索本地教材笔记
 - 基于检索到的内容调用 DeepSeek 回答
-- 维护简短上下文摘要，支持简单追问
-- 右侧显示交互演示板，可以点“上一步 / 下一步”
+- 发送完整历史对话，支持连续追问
+- 右侧显示从对话中自动提取的交互演示板，可以点“上一步 / 下一步”
 - 普通问题默认隐藏 C 代码
 - 明确要求代码时，会保存为 `temp.c`，并尝试用 `gcc` 编译运行
 
@@ -18,16 +18,14 @@
 
 - 顺序表插入
 - 顺序表删除
+- 顺序表查找
 - 单链表插入
 - 单链表删除
 - 单链表查找
-- 单链表长度统计
-- 头插法
-- 尾插法
-- 链表逆置
-- 循环链表遍历
+- 栈 push / pop
+- 队列 enqueue / dequeue
 
-排序、栈、队列、树、图等内容暂不支持演示。
+树、图、排序等内容暂不在第一阶段实现。
 
 ## 项目结构
 
@@ -37,7 +35,14 @@ data-structure-agent-mvp/
 ├─ llm.py                    # DeepSeek API 调用
 ├─ rag.py                    # Markdown 关键词检索
 ├─ code_checker.py           # C 代码提取、保存、编译运行
-├─ operation_visualizer.py   # 右侧交互演示板和本地模拟器
+├─ operation_visualizer.py   # 旧版演示兼容文件
+├─ visualizer/
+│  ├─ protocol.py            # DSVP 协议和 Pydantic 校验
+│  ├─ intent_parser.py       # 自然语言 -> OperationRequest
+│  ├─ dispatcher.py          # structure + operation 分发
+│  ├─ simulators/            # 纯本地模拟器
+│  ├─ renderers/             # HTML / Markdown / Mermaid 渲染
+│  └─ tests/                 # pytest 测试
 ├─ prompts/
 │  └─ system_prompt.txt      # 助教回答约束
 ├─ knowledge/
@@ -190,7 +195,7 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 每次提问后，程序会：
 
-1. 把用户问题和简短上下文摘要合成检索 query
+1. 把用户问题和此前完整对话合成检索 query
 2. 在 `knowledge/*.md` 中按关键词匹配
 3. 取最相关的 3 个片段
 4. 把这些片段和用户问题一起发给 DeepSeek
@@ -199,21 +204,100 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 ## 演示板怎么工作
 
-演示板不是直接运行任意 C 代码。
+演示板不是直接运行任意 C 代码，也不让 DeepSeek 生成步骤或动画。
 
-当前流程是：
+新的 DSVP（Data Structure Visualization Protocol）流程是：
 
 ```text
-用户问题
--> DeepSeek 输出结构化特征 JSON
--> Python 判断是否支持该操作
--> 调用本地模拟器生成步骤
--> Streamlit 渲染演示板
+用户自然语言
+-> DeepSeek 只解析为 OperationRequest JSON
+-> Pydantic 校验 schema 和必要字段
+-> dispatcher 调用本地纯函数模拟器
+-> 模拟器输出 VisualizationTrace JSON
+-> Streamlit 根据 state.kind 渲染每一步
 ```
 
-这样比让 AI 临时编动画更稳定。
+这样可以保证数组移动、链表指针变化、栈顶变化、队头队尾变化都由本地可验证代码决定。
+
+### OperationRequest
+
+第一阶段支持：
+
+- `structure`: `sequential_list`, `singly_linked_list`, `stack`, `queue`
+- `operation`: `insert`, `delete`, `search`, `push`, `pop`, `enqueue`, `dequeue`
+
+示例：
+
+```json
+{
+  "version": "1.0",
+  "structure": "singly_linked_list",
+  "operation": "insert",
+  "params": {
+    "mode": "by_position",
+    "position": 2,
+    "value": 9
+  },
+  "initial_state": {
+    "data": [3, 5, 7],
+    "metadata": {
+      "index_base": 1,
+      "use_head_node": true,
+      "capacity": 10
+    }
+  },
+  "options": {
+    "language": "c",
+    "explain_level": "beginner"
+  }
+}
+```
+
+### VisualizationTrace
+
+模拟器输出统一的 `VisualizationTrace`，每一步包含：
+
+- `state.kind`: `sequence`, `linked`, `stack`, `queue`
+- `actions`: `shift`, `link`, `unlink`, `compare`, `push`, `pop`, `enqueue`, `dequeue` 等
+- `highlights`: 节点、边、单元格、指针的高亮角色
+- `errors` / `warnings`: 统一错误和提示格式
+
+### 对话中触发演示
+
+在普通对话输入框里直接输入：
+
+```text
+用 3,5,7 演示单链表在第 2 位插入 9
+```
+
+系统会从对话中提取 OperationRequest JSON，并在右侧按教材常见带头结点写法逐步展示：
+
+- 初始链表
+- 创建新结点 `s`
+- 查找前驱结点 `pre`
+- 执行 `s->next = pre->next`
+- 执行 `pre->next = s`
+- 最终链表
+
+也可以输入：
+
+```text
+用顺序表 1,2,3,4 演示在第 3 位插入 8
+```
+
+系统会逐步展示顺序表从后向前移动元素，再写入新值。
 
 如果问题超出当前支持范围，例如排序，演示板会提示暂不支持。
+
+## 测试
+
+安装依赖后运行：
+
+```powershell
+pytest visualizer/tests -q
+```
+
+测试覆盖顺序表插入、删除、查找，单链表插入、删除、查找，栈 push/pop，队列 enqueue/dequeue，以及空表、空栈、空队列、非法位置和查找失败等错误路径。
 
 ## 适合展示的问题
 

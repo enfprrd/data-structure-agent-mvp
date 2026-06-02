@@ -9,15 +9,11 @@ import streamlit as st
 
 from code_checker import check_c_code_in_answer
 from llm import DeepSeekClient, DeepSeekError, load_dotenv
-from operation_visualizer import (
-    UNSUPPORTED_HINT,
-    SUPPORTED_OPERATIONS,
-    build_visualization,
-    build_visualization_from_features,
-    explain_visualization_source,
-    render_visualization,
-)
 from rag import MarkdownKeywordRetriever
+from visualizer.dispatcher import dispatch
+from visualizer.intent_parser import parse_operation_request
+from visualizer.protocol import Clarification, OperationRequest
+from visualizer.renderers.html_renderer import render_step_html, render_styles
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,7 +29,6 @@ def load_system_prompt() -> str:
 def build_user_prompt(
     question: str,
     contexts: list[dict[str, str]],
-    learning_summary: str,
 ) -> str:
     context_text = "\n\n".join(
         f"【资料 {index} | {item['source']}】\n{item['content']}"
@@ -46,9 +41,6 @@ def build_user_prompt(
 
 {context_text}
 
-这是此前对话压缩后的学习上下文，不是用户的新问题：
-{learning_summary or "暂无。"}
-
 用户问题：
 {question}
 
@@ -57,154 +49,33 @@ def build_user_prompt(
 无论用户是否明确要求代码，都要在回答末尾给出一个简短的 C 语言代码块，供网页演示板和自动检查使用。"""
 
 
-def build_feature_prompt(
-    question: str,
-    contexts: list[dict[str, str]],
-    learning_summary: str,
-) -> str:
-    context_titles = "\n".join(f"- {item['source']}" for item in contexts[:3])
-    return f"""请把用户的数据结构问题特征化，用于网页交互演示板判断。
-
-用户问题：
-{question}
-
-此前学习上下文：
-{learning_summary or "暂无。"}
-
-检索片段：
-{context_titles}
-
-只返回 JSON，不要解释。字段：
-- supported: true 或 false。只有当前 MVP 能演示时才为 true
-- operation: 从下面枚举中选一个：
-  head_insert, tail_insert, linked_insert, linked_delete, linked_search, linked_length,
-  linked_reverse, circular_traverse, seq_insert, seq_delete, none
-- structure: linked_list, circular_list, sequential_list, unknown
-- values: 用户明确给出的数据序列，例如 [10,12,15,39,49]；没有则 []
-- target: 查找或删除目标值；没有则 null
-- position: 插入或删除位置；没有则 null
-- confidence: 0 到 1
-- reason: 20 字以内中文理由
-
-规则：
-- 排序、栈、队列、树、图都暂不支持演示，supported=false, operation=none
-- 用户给出的数字序列必须放入 values
-- 用户追问“它、这个、刚才那个”时，结合此前学习上下文判断
-
-示例：
-{{"supported":true,"operation":"linked_reverse","structure":"linked_list","values":[10,12,15,39,49],"target":null,"position":null,"confidence":0.95,"reason":"用户要链表逆序"}}"""
+def build_conversation_context(messages: list[dict[str, object]]) -> str:
+    lines: list[str] = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        label = "用户" if role == "user" else "助教"
+        content = str(message.get("content", "")).strip()
+        code_blocks = message.get("code_blocks")
+        if code_blocks:
+            content = content + "\n" + "\n".join(str(block) for block in code_blocks)
+        if content:
+            lines.append(f"{label}：{content}")
+    return "\n\n".join(lines)
 
 
-def classify_question_with_deepseek(
-    client: DeepSeekClient,
-    question: str,
-    contexts: list[dict[str, str]],
-    learning_summary: str,
-) -> dict[str, object]:
-    try:
-        raw = client.chat(
-            [
-                {
-                    "role": "system",
-                    "content": "你只输出严格 JSON，不输出 Markdown，不输出解释。",
-                },
-                {
-                    "role": "user",
-                    "content": build_feature_prompt(question, contexts, learning_summary),
-                },
-            ],
-            temperature=0,
-            max_tokens=300,
-        )
-    except DeepSeekError:
-        return {}
-
-    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    if not match:
-        return {}
-
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-
-    return data if isinstance(data, dict) else {}
-
-
-def feature_supported(features: dict[str, object]) -> bool:
-    if not features:
-        return True
-    if features.get("supported") is False:
-        return False
-    operation = str(features.get("operation", "")).strip().lower()
-    return operation in SUPPORTED_OPERATIONS
-
-
-def feature_reason(features: dict[str, object]) -> str:
-    reason = str(features.get("reason", "")).strip()
-    if reason:
-        return reason
-    return UNSUPPORTED_HINT
-
-
-def clearly_unsupported_question(question: str) -> str:
-    compact = question.lower().replace(" ", "")
-    unsupported_terms = {
-        "排序": "排序通常属于后续章节，当前 MVP 暂不支持排序演示。",
-        "升序": "排序通常属于后续章节，当前 MVP 暂不支持排序演示。",
-        "降序": "排序通常属于后续章节，当前 MVP 暂不支持排序演示。",
-        "冒泡": "冒泡排序不在当前第 2 章线性表 MVP 演示范围内。",
-        "选择排序": "选择排序不在当前第 2 章线性表 MVP 演示范围内。",
-        "插入排序": "插入排序不在当前第 2 章线性表 MVP 演示范围内。",
-        "sort": "排序不在当前第 2 章线性表 MVP 演示范围内。",
-    }
-    for term, reason in unsupported_terms.items():
-        if term in compact:
-            return reason
-    return ""
-
-
-def summarize_learning_context(
-    client: DeepSeekClient,
-    old_summary: str,
-    question: str,
-    answer: str,
-    features: dict[str, object],
-) -> str:
-    feature_text = json.dumps(features, ensure_ascii=False)
-    prompt = f"""请维护一个极短的本科数据结构学习上下文摘要，用于下一轮理解指代和节约 token。
-
-旧摘要：
-{old_summary or "暂无。"}
-
-本轮用户问题：
-{question}
-
-本轮问题特征：
-{feature_text}
-
-本轮助教回答：
-{answer[:1800]}
-
-只输出 120 字以内中文摘要。必须包含：
-- 当前主题/操作
-- 用户可能正在困惑的点
-- 用户偏好或页面交互偏好
-
-不要输出列表符号以外的多余解释。"""
-    try:
-        summary = client.chat(
-            [
-                {"role": "system", "content": "你负责压缩学习上下文，只输出短摘要。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=220,
-        )
-    except DeepSeekError:
-        return old_summary
-
-    return summary.strip()[:300]
+def build_chat_history_messages(messages: list[dict[str, object]]) -> list[dict[str, str]]:
+    history: list[dict[str, str]] = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(message.get("content", "")).strip()
+        code_blocks = message.get("code_blocks")
+        if code_blocks:
+            content = content + "\n" + "\n".join(str(block) for block in code_blocks)
+        if content:
+            history.append({"role": role, "content": content})
+    return history
 
 
 def render_contexts(contexts: list[dict[str, str]]) -> None:
@@ -266,6 +137,101 @@ def make_teaching_view(answer: str, show_code: bool) -> tuple[str, list[str]]:
     )
     visible_answer = re.sub(r"\n{3,}", "\n\n", visible_answer).strip()
     return visible_answer, code_blocks
+
+
+def question_may_need_demo(question: str) -> bool:
+    demo_words = [
+        "演示",
+        "展示",
+        "可视化",
+        "动画",
+        "一步步",
+        "逐步",
+        "插入",
+        "删除",
+        "查找",
+        "入栈",
+        "出栈",
+        "入队",
+        "出队",
+        "push",
+        "pop",
+        "enqueue",
+        "dequeue",
+    ]
+    return any(word in question.lower() for word in demo_words)
+
+
+def render_current_trace_demo() -> None:
+    trace = st.session_state.get("dsvp_trace")
+    request = st.session_state.get("dsvp_request")
+    clarification = st.session_state.get("dsvp_clarification")
+
+    st.markdown("### 当前演示")
+    if clarification:
+        st.caption("从对话中检测到演示意图，但参数还不完整。")
+        st.warning(clarification.message)
+        if clarification.missing_fields:
+            st.caption("缺少字段：" + ", ".join(clarification.missing_fields))
+        return
+
+    if trace is None:
+        st.caption("在对话中提出“演示/逐步展示插入删除查找”等需求后，这里会自动出现步骤。")
+        return
+
+    steps = trace.steps
+    if not steps:
+        st.caption("本地模拟器没有生成步骤。")
+        return
+
+    if "dsvp_step" not in st.session_state:
+        st.session_state.dsvp_step = 0
+    current = max(0, min(int(st.session_state.dsvp_step), len(steps) - 1))
+    st.session_state.dsvp_step = current
+    step = steps[current]
+
+    st.caption(trace.title)
+    if request is not None:
+        with st.expander("OperationRequest JSON", expanded=False):
+            st.json(json.loads(request.model_dump_json(by_alias=True)))
+
+    if trace.errors:
+        for error in trace.errors:
+            st.error(f"{error.code}：{error.message} {error.detail}")
+    if trace.warnings:
+        for warning in trace.warnings:
+            st.warning(f"{warning.code}：{warning.message} {warning.detail}")
+
+    st.markdown(render_styles(), unsafe_allow_html=True)
+    st.caption(f"第 {current + 1} / {len(steps)} 步")
+    st.markdown(render_step_html(step), unsafe_allow_html=True)
+    st.markdown("**当前步骤解释**")
+    st.write(step.description)
+    st.markdown("**当前关键操作**")
+    if step.actions:
+        for action in step.actions:
+            st.write(f"- {action.description}")
+    else:
+        st.write("暂无关键操作。")
+
+    prev_col, next_col, reset_col = st.columns(3)
+    with prev_col:
+        if st.button("上一步", disabled=current == 0, key="chat_demo_prev"):
+            st.session_state.dsvp_step = current - 1
+            st.rerun()
+    with next_col:
+        if st.button("下一步", disabled=current == len(steps) - 1, key="chat_demo_next"):
+            st.session_state.dsvp_step = current + 1
+            st.rerun()
+    with reset_col:
+        if st.button("重置", key="chat_demo_reset"):
+            st.session_state.dsvp_step = 0
+            st.rerun()
+
+    with st.expander("步骤列表", expanded=False):
+        for index, item in enumerate(steps):
+            prefix = "-> " if index == current else ""
+            st.write(f"{prefix}{item.step_id}. {item.title}")
 
 
 def main() -> None:
@@ -344,23 +310,20 @@ def main() -> None:
     if "last_contexts" not in st.session_state:
         st.session_state.last_contexts = []
 
-    if "demo_steps" not in st.session_state:
-        st.session_state.demo_steps = []
+    if "dsvp_request" not in st.session_state:
+        st.session_state.dsvp_request = None
 
-    if "demo_title" not in st.session_state:
-        st.session_state.demo_title = "等待提问"
+    if "dsvp_trace" not in st.session_state:
+        st.session_state.dsvp_trace = None
 
-    if "demo_hint" not in st.session_state:
-        st.session_state.demo_hint = ""
+    if "dsvp_step" not in st.session_state:
+        st.session_state.dsvp_step = 0
 
-    if "demo_version" not in st.session_state:
-        st.session_state.demo_version = 0
+    if "dsvp_clarification" not in st.session_state:
+        st.session_state.dsvp_clarification = None
 
     if "is_generating" not in st.session_state:
         st.session_state.is_generating = False
-
-    if "learning_summary" not in st.session_state:
-        st.session_state.learning_summary = ""
 
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = ""
@@ -381,21 +344,17 @@ def main() -> None:
 
         st.divider()
         st.markdown("上下文：")
-        if st.session_state.learning_summary:
-            st.caption(st.session_state.learning_summary)
-        else:
-            st.caption("暂无。")
+        st.caption(f"将发送完整历史对话：{len(st.session_state.messages)} 条")
         if st.button("清空"):
             st.session_state.messages = []
             st.session_state.last_contexts = []
-            st.session_state.learning_summary = ""
             st.session_state.pending_question = ""
             st.session_state.pending_contexts = []
             st.session_state.is_generating = False
-            st.session_state.demo_steps = []
-            st.session_state.demo_title = "等待提问"
-            st.session_state.demo_hint = ""
-            st.session_state.demo_version += 1
+            st.session_state.dsvp_request = None
+            st.session_state.dsvp_trace = None
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_clarification = None
             st.rerun()
 
         st.divider()
@@ -412,15 +371,7 @@ def main() -> None:
         demo_placeholder = st.empty()
         with demo_placeholder.container():
             with st.container(key="demo_panel"):
-                st.markdown("### 当前演示")
-                st.caption(st.session_state.demo_title)
-                if st.session_state.demo_hint:
-                    st.caption(st.session_state.demo_hint)
-                render_visualization(
-                    st.session_state.demo_steps,
-                    key=f"main_demo_{st.session_state.demo_version}",
-                    empty_message=st.session_state.demo_hint,
-                )
+                render_current_trace_demo()
 
     with chat_col:
         st.markdown("### 对话")
@@ -433,11 +384,8 @@ def main() -> None:
         question = st.chat_input("问一个线性表问题")
     if question and not st.session_state.is_generating and not st.session_state.pending_question:
         retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
-        retrieval_query = (
-            f"{question}\n当前学习上下文：{st.session_state.learning_summary}"
-            if st.session_state.learning_summary
-            else question
-        )
+        conversation_context = build_conversation_context(st.session_state.messages)
+        retrieval_query = f"{question}\n此前完整对话上下文：{conversation_context}" if conversation_context else question
         contexts = retriever.retrieve(retrieval_query, top_k=3)
         st.session_state.last_contexts = contexts
         st.session_state.messages.append({"role": "user", "content": question})
@@ -451,6 +399,8 @@ def main() -> None:
     st.session_state.is_generating = True
     question = st.session_state.pending_question
     contexts = st.session_state.pending_contexts
+    prior_messages = st.session_state.messages[:-1]
+    conversation_context = build_conversation_context(prior_messages)
 
     try:
         client = DeepSeekClient()
@@ -463,12 +413,28 @@ def main() -> None:
         st.rerun()
         return
 
+    if question_may_need_demo(question):
+        parse_text = (
+            f"此前完整对话上下文：\n{conversation_context}\n\n"
+            f"用户新问题：\n{question}"
+        )
+        parsed_demo = parse_operation_request(client, parse_text)
+        if isinstance(parsed_demo, OperationRequest):
+            st.session_state.dsvp_request = parsed_demo
+            st.session_state.dsvp_trace = dispatch(parsed_demo)
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_clarification = None
+        elif any(word in question for word in ["演示", "展示", "可视化", "一步步", "逐步"]):
+            st.session_state.dsvp_clarification = parsed_demo
+            st.session_state.dsvp_request = None
+            st.session_state.dsvp_trace = None
+            st.session_state.dsvp_step = 0
+
     if not contexts:
-        answer = "这块教材笔记还没补到，我先不乱讲。"
-        st.session_state.demo_steps = []
-        st.session_state.demo_title = question
-        st.session_state.demo_hint = "这块笔记还没补到。"
-        st.session_state.demo_version += 1
+        if st.session_state.dsvp_trace is not None:
+            answer = "已根据你的对话在右侧生成本地演示步骤。知识库没有检索到高相关片段，所以文字讲解我先不扩展。"
+        else:
+            answer = "这块教材笔记还没补到，我先不乱讲。"
         st.session_state.messages.append({"role": "assistant", "content": answer})
         st.session_state.pending_question = ""
         st.session_state.pending_contexts = []
@@ -476,48 +442,14 @@ def main() -> None:
         st.rerun()
         return
 
-    features = classify_question_with_deepseek(
-        client,
-        question,
-        contexts,
-        st.session_state.learning_summary,
-    )
-    unsupported_reason = clearly_unsupported_question(question)
-    if unsupported_reason:
-        features = {
-            "supported": False,
-            "operation": "none",
-            "reason": unsupported_reason,
-            "values": [],
-        }
-
-    if features and not feature_supported(features):
-        st.session_state.demo_steps = []
-        st.session_state.demo_title = question
-        st.session_state.demo_hint = feature_reason(features)
-        st.session_state.demo_version += 1
-
-    preliminary_steps = build_visualization_from_features(
-        features,
-        question,
-        st.session_state.learning_summary,
-    )
-    if preliminary_steps:
-        st.session_state.demo_steps = preliminary_steps
-        st.session_state.demo_title = question
-        reason = str(features.get("reason", "")).strip()
-        operation = str(features.get("operation", "")).strip()
-        st.session_state.demo_hint = reason or operation or "已识别操作"
-        st.session_state.demo_version += 1
-
     messages = [
         {"role": "system", "content": load_system_prompt()},
+        *build_chat_history_messages(prior_messages),
         {
             "role": "user",
             "content": build_user_prompt(
                 question,
                 contexts,
-                st.session_state.learning_summary,
             ),
         },
     ]
@@ -559,29 +491,7 @@ def main() -> None:
         except DeepSeekError as exc:
             code_check.summary += f"\n\n二次修正调用失败：{exc}"
 
-    visual_steps = (
-        []
-        if features and not feature_supported(features)
-        else build_visualization_from_features(
-            features,
-            question,
-            f"{st.session_state.learning_summary}\n{answer}",
-        )
-    )
-    if visual_steps:
-        st.session_state.demo_steps = visual_steps
-        st.session_state.demo_title = question
-        st.session_state.demo_hint = explain_visualization_source(visual_steps)
-        st.session_state.demo_version += 1
-
     visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
-    st.session_state.learning_summary = summarize_learning_context(
-        client,
-        st.session_state.learning_summary,
-        question,
-        visible_answer,
-        features,
-    )
     message_id = len(st.session_state.messages)
     st.session_state.messages.append(
         {
