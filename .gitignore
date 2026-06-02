@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+temp.c
+temp_program.exe
+.streamlit/
+.env
+streamlit.*.log
+kimi.html
