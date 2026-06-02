@@ -299,6 +299,38 @@ def main() -> None:
         section[data-testid="stChatInput"] {
             position: static;
         }
+        @media (max-width: 900px) {
+            html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+                height: auto;
+                min-height: 100vh;
+                overflow: auto;
+            }
+            [data-testid="stMainBlockContainer"] {
+                height: auto;
+                min-height: 100vh;
+                overflow: visible;
+                padding: 1rem 0.75rem 1rem;
+            }
+            [data-testid="column"]:nth-of-type(2) > div {
+                height: auto;
+                max-height: none;
+                overflow: visible;
+            }
+            .st-key-chat_scroll {
+                max-height: 52vh;
+                overflow-y: auto;
+            }
+            .st-key-demo_panel {
+                max-height: none;
+                overflow: visible;
+            }
+            h1 {
+                font-size: 1.6rem !important;
+            }
+            h3 {
+                font-size: 1.15rem !important;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -379,19 +411,20 @@ def main() -> None:
     with demo_col:
         demo_placeholder = st.empty()
         with demo_placeholder.container():
-            st.markdown("### 当前演示")
-            st.caption(st.session_state.demo_title)
-            if st.session_state.demo_hint:
-                st.caption(st.session_state.demo_hint)
-            render_visualization(
-                st.session_state.demo_steps,
-                key=f"main_demo_{st.session_state.demo_version}",
-                empty_message=st.session_state.demo_hint,
-            )
+            with st.container(key="demo_panel"):
+                st.markdown("### 当前演示")
+                st.caption(st.session_state.demo_title)
+                if st.session_state.demo_hint:
+                    st.caption(st.session_state.demo_hint)
+                render_visualization(
+                    st.session_state.demo_steps,
+                    key=f"main_demo_{st.session_state.demo_version}",
+                    empty_message=st.session_state.demo_hint,
+                )
 
     with chat_col:
         st.markdown("### 对话")
-        with st.container(height=560, border=True):
+        with st.container(height=560, border=True, key="chat_scroll"):
             render_chat_messages(st.session_state.messages)
             if st.session_state.pending_question:
                 with st.chat_message("assistant"):
