@@ -24,15 +24,15 @@ COURSE_OPERATION_VOCABULARY = """
 - string: naive_match, kmp_match
 - array: address_mapping, matrix_transpose, sparse_matrix_transpose
 - generalized_list: head_tail, depth, length
-- binary_tree: build, traverse_preorder, traverse_inorder, traverse_postorder, traverse_level_order, threaded_binary_tree, huffman_build
+- binary_tree: traverse_preorder, traverse_inorder, traverse_postorder, traverse_level_order, threaded_binary_tree, huffman_build
 - tree: forest_to_binary_tree, binary_tree_to_forest
-- graph: dfs, bfs, prim, kruskal, dijkstra, floyd, topological_sort, critical_path
+- graph: build, dfs, bfs, dijkstra, prim, kruskal, floyd, topological_sort, critical_path
 - search_table: sequential_search, binary_search, block_search
 - binary_search_tree: search, insert, delete
 - balanced_binary_tree: search, insert, rotate
 - b_tree: search, insert
 - hash_table: search, insert, delete
-- sort: insertion_sort, shell_sort, bubble_sort, quick_sort, selection_sort, heap_sort, merge_sort, radix_sort
+- sort: bubble_sort, insertion_sort, selection_sort, quick_sort, shell_sort, heap_sort, merge_sort, radix_sort
 - external_sort: multiway_merge, replacement_selection, loser_tree, optimal_merge_tree
 
 禁止把 operation 写成 value、target、position、data、array、node 这类参数名或对象名。

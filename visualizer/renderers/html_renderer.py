@@ -32,6 +32,10 @@ def render_step_html(step: Step) -> str:
         body = _render_stack(step)
     elif kind == "queue":
         body = _render_queue(step)
+    elif kind == "tree":
+        body = _render_tree(step)
+    elif kind == "graph":
+        body = _render_graph(step)
     elif kind == "unsupported":
         body = _render_unsupported(step)
     else:
@@ -78,6 +82,21 @@ def render_styles() -> str:
     .dsvp-pointer-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
     .dsvp-pointer-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid #cbd5e1;border-radius:999px;background:white;color:#334155;font-size:12px;font-weight:700}
     .dsvp-pointer-chip.active{border-color:#2563eb;background:#eff6ff;color:#1d4ed8}
+    .dsvp-tree{display:flex;justify-content:center;min-width:340px;overflow:auto;padding:4px 0 2px}
+    .dsvp-tree-subtree{display:flex;flex-direction:column;align-items:center;position:relative}
+    .dsvp-tree-children{display:flex;justify-content:center;gap:22px;position:relative;margin-top:24px}
+    .dsvp-tree-children::before{content:"";position:absolute;left:28px;right:28px;top:-12px;border-top:2px solid #93c5fd}
+    .dsvp-tree-subtree.has-child>.dsvp-tree-node-wrap::after{content:"";position:absolute;left:50%;bottom:-24px;height:24px;border-left:2px solid #93c5fd}
+    .dsvp-tree-child{position:relative;min-width:58px}
+    .dsvp-tree-child::before{content:"";position:absolute;left:50%;top:-12px;height:12px;border-left:2px solid #93c5fd}
+    .dsvp-tree-node-wrap{position:relative;display:flex;justify-content:center}
+    .dsvp-tree-node{position:relative;box-sizing:border-box;width:58px;min-width:58px;min-height:58px;padding:7px 8px;border:2px solid #60a5fa;border-radius:999px;background:white;color:#111827;text-align:center;font-weight:800;box-shadow:0 1px 2px rgba(15,23,42,.06);transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease,background .22s ease}
+    .dsvp-tree-empty{width:58px;height:58px;visibility:hidden}
+    .dsvp-graph-node{position:relative;box-sizing:border-box;min-width:54px;min-height:54px;padding:7px 10px;border:2px solid #60a5fa;border-radius:999px;background:white;color:#111827;text-align:center;font-weight:800;box-shadow:0 1px 2px rgba(15,23,42,.06);transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease,background .22s ease}
+    .dsvp-graph{display:flex;flex-direction:column;gap:12px}
+    .dsvp-graph-nodes{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .dsvp-graph-edges{display:flex;gap:6px;flex-wrap:wrap}
+    .dsvp-edge-chip{padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;font-size:12px;font-weight:700}
     .dsvp-companion{margin-top:8px;display:grid;grid-template-columns:1fr;gap:8px}
     .dsvp-panel{border:1px solid #e5e7eb;border-radius:8px;background:white;padding:10px 12px}
     .dsvp-panel-title{margin:0 0 6px;color:#334155;font-size:12px;font-weight:800}
@@ -210,6 +229,53 @@ def _render_queue(step: Step) -> str:
     )
 
 
+def _render_tree(step: Step) -> str:
+    state = step.state
+    node_roles = {item.id: item.role for item in step.highlights.nodes}
+    nodes = state.get("nodes", [])
+    by_index = {int(node.get("index", 0)): node for node in nodes}
+    order = " -> ".join(str(item) for item in state.get("visit_order", []))
+    tree_html = _render_tree_subtree(0, by_index, node_roles)
+    return (
+        "<div class='dsvp-wrap'>"
+        f"<div class='dsvp-tree'>{tree_html}</div>"
+        f"<div class='dsvp-meta'>访问序列：{html.escape(order or '暂无')}</div>"
+        "</div>"
+    )
+
+
+def _render_graph(step: Step) -> str:
+    state = step.state
+    node_roles = {item.id: item.role for item in step.highlights.nodes}
+    node_html = []
+    for node in state.get("nodes", []):
+        node_id = str(node)
+        role = node_roles.get(node_id)
+        classes = ["dsvp-graph-node"]
+        if role:
+            classes.append(_role_class(role))
+        node_html.append(
+            f"<div class='{' '.join(classes)}'>{_marker_row(_badge(role) if role else '')}<span class='dsvp-value'>{html.escape(node_id)}</span></div>"
+        )
+    edge_html = []
+    for edge in state.get("edges", []):
+        src = html.escape(str(edge.get("from")))
+        dst = html.escape(str(edge.get("to")))
+        weight = edge.get("weight")
+        label = f"{src} -> {dst}" + (f" ({html.escape(str(weight))})" if weight not in (None, 1) else "")
+        edge_html.append(f"<span class='dsvp-edge-chip'>{label}</span>")
+    order = " -> ".join(str(item) for item in state.get("visit_order", []))
+    return (
+        "<div class='dsvp-wrap'>"
+        "<div class='dsvp-graph'>"
+        f"<div class='dsvp-graph-nodes'>{''.join(node_html)}</div>"
+        f"<div class='dsvp-graph-edges'>{''.join(edge_html)}</div>"
+        "</div>"
+        f"<div class='dsvp-meta'>轨迹：{html.escape(order or '暂无')}</div>"
+        "</div>"
+    )
+
+
 def _render_unsupported(step: Step) -> str:
     return f"<div class='dsvp-wrap'><div class='dsvp-unsupported'>{html.escape(step.description)}</div></div>"
 
@@ -322,6 +388,43 @@ def _first_node_index(node_roles: dict[str, str]) -> int | None:
         if match:
             indexes.append(int(match.group(1)))
     return min(indexes) if indexes else None
+
+
+def _render_tree_subtree(index: int, by_index: dict[int, dict[str, Any]], node_roles: dict[str, str]) -> str:
+    node = by_index.get(index)
+    if node is None:
+        return "<div class='dsvp-tree-empty'></div>"
+
+    node_id = str(node.get("id"))
+    role = node_roles.get(node_id)
+    classes = ["dsvp-tree-node"]
+    if role:
+        classes.append(_role_class(role))
+    node_html = (
+        f"<div class='dsvp-tree-node-wrap'><div class='{' '.join(classes)}'>"
+        f"{_marker_row(_badge(role) if role else '')}"
+        f"<span class='dsvp-value'>{html.escape(str(node.get('label')))}</span>"
+        "</div></div>"
+    )
+
+    left_index = 2 * index + 1
+    right_index = 2 * index + 2
+    has_left = left_index in by_index
+    has_right = right_index in by_index
+    if not has_left and not has_right:
+        return f"<div class='dsvp-tree-subtree'>{node_html}</div>"
+
+    left = _render_tree_subtree(left_index, by_index, node_roles)
+    right = _render_tree_subtree(right_index, by_index, node_roles)
+    return (
+        "<div class='dsvp-tree-subtree has-child'>"
+        f"{node_html}"
+        "<div class='dsvp-tree-children'>"
+        f"<div class='dsvp-tree-child'>{left}</div>"
+        f"<div class='dsvp-tree-child'>{right}</div>"
+        "</div>"
+        "</div>"
+    )
 
 
 def _stack_role(step: Step, index: int, active_top: int) -> str | None:

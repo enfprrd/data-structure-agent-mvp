@@ -22,6 +22,7 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
 APP_VERSION = "test-2026-06-03-02"
+GENERATION_STALE_SECONDS = 45
 
 
 def load_system_prompt() -> str:
@@ -156,6 +157,7 @@ def finish_generation() -> None:
     st.session_state.pending_question = ""
     st.session_state.pending_contexts = []
     st.session_state.is_generating = False
+    st.session_state.generation_started_at = 0.0
 
 
 def render_current_trace_demo() -> None:
@@ -204,14 +206,6 @@ def render_current_trace_demo() -> None:
     st.markdown(render_styles(), unsafe_allow_html=True)
     st.caption(f"第 {current + 1} / {len(steps)} 步")
     st.markdown(render_step_html(step), unsafe_allow_html=True)
-    st.markdown("**当前步骤解释**")
-    st.write(step.description)
-    st.markdown("**当前关键操作**")
-    if step.actions:
-        for action in step.actions:
-            st.write(f"- {action.description}")
-    else:
-        st.write("暂无关键操作。")
 
     prev_col, next_col, reset_col = st.columns(3)
     with prev_col:
@@ -340,6 +334,9 @@ def main() -> None:
     if "is_generating" not in st.session_state:
         st.session_state.is_generating = False
 
+    if "generation_started_at" not in st.session_state:
+        st.session_state.generation_started_at = 0.0
+
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = ""
 
@@ -361,12 +358,18 @@ def main() -> None:
         st.divider()
         st.markdown("上下文：")
         st.caption(f"将发送完整历史对话：{len(st.session_state.messages)} 条")
+        if st.session_state.pending_question:
+            st.caption(f"待处理问题：{st.session_state.pending_question}")
+        if st.button("恢复生成状态"):
+            finish_generation()
+            st.rerun()
         if st.button("清空"):
             st.session_state.messages = []
             st.session_state.last_contexts = []
             st.session_state.pending_question = ""
             st.session_state.pending_contexts = []
             st.session_state.is_generating = False
+            st.session_state.generation_started_at = 0.0
             st.session_state.dsvp_request = None
             st.session_state.dsvp_trace = None
             st.session_state.dsvp_step = 0
@@ -410,10 +413,19 @@ def main() -> None:
         st.session_state.pending_contexts = contexts
         st.rerun()
 
-    if not st.session_state.pending_question or st.session_state.is_generating:
+    if st.session_state.pending_question and st.session_state.is_generating:
+        elapsed = time.time() - float(st.session_state.get("generation_started_at", 0.0) or 0.0)
+        if elapsed > GENERATION_STALE_SECONDS:
+            st.session_state.is_generating = False
+            st.session_state.generation_started_at = 0.0
+        else:
+            return
+
+    if not st.session_state.pending_question:
         return
 
     st.session_state.is_generating = True
+    st.session_state.generation_started_at = time.time()
     question = st.session_state.pending_question
     contexts = st.session_state.pending_contexts
     prior_messages = st.session_state.messages[:-1]

@@ -11,6 +11,10 @@ SUPPORTED_DEMO_PAIRS = {
     "singly_linked_list": {"insert", "delete", "search", "build"},
     "stack": {"push", "pop"},
     "queue": {"enqueue", "dequeue"},
+    "binary_tree": {"traverse_preorder", "traverse_inorder", "traverse_postorder", "traverse_level_order"},
+    "graph": {"build", "dfs", "bfs", "dijkstra"},
+    "search_table": {"sequential_search", "binary_search"},
+    "sort": {"bubble_sort", "insertion_sort", "selection_sort", "quick_sort"},
 }
 SUPPORTED_STRUCTURES = set(SUPPORTED_DEMO_PAIRS)
 SUPPORTED_OPERATIONS = {operation for operations in SUPPORTED_DEMO_PAIRS.values() for operation in operations}
@@ -53,12 +57,12 @@ class RequestParams(ProtocolModel):
     position: int | None = None
     value: int | str | None = None
     target: int | str | None = None
-    values: list[int | str] | None = None
+    values: list[Any] | None = None
     capacity: int | None = None
 
 
 class InitialState(ProtocolModel):
-    data: list[int | str]
+    data: list[Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("data", mode="before")
@@ -103,6 +107,8 @@ class OperationRequest(ProtocolModel):
             missing.append("params.target")
         if self.operation == "build" and not self.params.values:
             missing.append("params.values")
+        if self.structure == "search_table" and self.params.target is None:
+            missing.append("params.target")
         if missing:
             raise ValueError("缺少必要字段：" + ", ".join(missing))
         return self

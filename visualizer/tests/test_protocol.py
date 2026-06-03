@@ -46,6 +46,25 @@ def test_unsupported_course_operation_is_valid_request() -> None:
     assert request.operation == "quick_sort"
 
 
+def test_unsupported_graph_matrix_data_is_valid_request() -> None:
+    request = OperationRequest.model_validate(
+        {
+            "structure": "graph",
+            "operation": "build",
+            "params": {},
+            "initial_state": {
+                "data": [
+                    [0, 1, 1],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                ],
+                "metadata": {"index_base": 0},
+            },
+        }
+    )
+    assert request.initial_state.data[0] == [0, 1, 1]
+
+
 def test_initial_state_data_must_be_array() -> None:
     try:
         OperationRequest.model_validate(
