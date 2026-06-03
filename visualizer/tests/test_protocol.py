@@ -17,6 +17,35 @@ def test_operation_request_validates_required_fields() -> None:
     assert request.params.position == 2
 
 
+def test_supported_demo_operation_still_requires_params() -> None:
+    try:
+        OperationRequest.model_validate(
+            {
+                "structure": "sequential_list",
+                "operation": "insert",
+                "params": {"value": 9},
+                "initial_state": {"data": [3, 5, 7]},
+            }
+        )
+    except ValidationError as exc:
+        assert "params.position" in str(exc)
+    else:
+        raise AssertionError("ValidationError expected")
+
+
+def test_unsupported_course_operation_is_valid_request() -> None:
+    request = OperationRequest.model_validate(
+        {
+            "structure": "sort",
+            "operation": "quick_sort",
+            "params": {"values": [5, 1, 3]},
+            "initial_state": {"data": [5, 1, 3]},
+        }
+    )
+    assert request.structure == "sort"
+    assert request.operation == "quick_sort"
+
+
 def test_initial_state_data_must_be_array() -> None:
     try:
         OperationRequest.model_validate(

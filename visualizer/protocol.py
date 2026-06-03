@@ -6,8 +6,14 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
-SUPPORTED_STRUCTURES = {"sequential_list", "singly_linked_list", "stack", "queue"}
-SUPPORTED_OPERATIONS = {"insert", "delete", "search", "build", "push", "pop", "enqueue", "dequeue"}
+SUPPORTED_DEMO_PAIRS = {
+    "sequential_list": {"insert", "delete", "search"},
+    "singly_linked_list": {"insert", "delete", "search", "build"},
+    "stack": {"push", "pop"},
+    "queue": {"enqueue", "dequeue"},
+}
+SUPPORTED_STRUCTURES = set(SUPPORTED_DEMO_PAIRS)
+SUPPORTED_OPERATIONS = {operation for operations in SUPPORTED_DEMO_PAIRS.values() for operation in operations}
 SUPPORTED_ACTION_TYPES = {
     "check_condition",
     "create_node",
@@ -70,22 +76,23 @@ class RequestOptions(ProtocolModel):
 
 class OperationRequest(ProtocolModel):
     version: str = "1.0"
-    structure: Literal["sequential_list", "singly_linked_list", "stack", "queue"]
-    operation: Literal["insert", "delete", "search", "build", "push", "pop", "enqueue", "dequeue"]
+    structure: str
+    operation: str
     params: RequestParams = Field(default_factory=RequestParams)
     initial_state: InitialState
     options: RequestOptions = Field(default_factory=RequestOptions)
 
     @model_validator(mode="after")
-    def validate_supported_pair_and_params(self) -> "OperationRequest":
-        allowed = {
-            "sequential_list": {"insert", "delete", "search"},
-            "singly_linked_list": {"insert", "delete", "search", "build"},
-            "stack": {"push", "pop"},
-            "queue": {"enqueue", "dequeue"},
-        }
-        if self.operation not in allowed[self.structure]:
-            raise ValueError(f"{self.structure} 不支持操作 {self.operation}。")
+    def validate_request_shape(self) -> "OperationRequest":
+        self.structure = self.structure.strip()
+        self.operation = self.operation.strip()
+        if not self.structure:
+            raise ValueError("structure 不能为空。")
+        if not self.operation:
+            raise ValueError("operation 不能为空。")
+
+        if not is_supported_demo_pair(self.structure, self.operation):
+            return self
 
         missing: list[str] = []
         if self.operation in {"insert", "delete"} and self.params.position is None:
@@ -225,9 +232,20 @@ def validation_to_clarification(exc: ValidationError, raw: str = "") -> Clarific
             missing.append(loc)
         messages.append(str(error.get("msg", "")))
     return Clarification(
-        message="演示参数还不完整或格式不合法，请补充后再演示。",
+        message="DeepSeek 生成的演示 JSON 参数不完整或格式不合法，正在尝试重新生成。",
         missing_fields=missing,
         raw=raw or "; ".join(messages),
+    )
+
+
+def is_supported_demo_pair(structure: str, operation: str) -> bool:
+    return operation in SUPPORTED_DEMO_PAIRS.get(structure, set())
+
+
+def supported_demo_summary() -> str:
+    return "\n".join(
+        f"- {structure}: {', '.join(sorted(operations))}"
+        for structure, operations in SUPPORTED_DEMO_PAIRS.items()
     )
 
 
@@ -267,4 +285,52 @@ def make_error_trace(
             )
         ],
         errors=[DSVPError(code=code, message=message, detail=detail, recoverable=True)],
+    )
+
+
+def make_unsupported_trace(request: OperationRequest) -> VisualizationTrace:
+    supported = supported_demo_summary()
+    detail = (
+        f"DeepSeek 已生成合法 OperationRequest：structure={request.structure}, "
+        f"operation={request.operation}。\n"
+        "这说明不是参数格式错误，而是本地右侧演示器暂未实现这一类动画。\n\n"
+        f"当前本地可视化支持：\n{supported}"
+    )
+    initial = str(request.initial_state.data)
+    return VisualizationTrace(
+        title="当前操作暂不支持可视化演示",
+        structure=request.structure,
+        operation=request.operation,
+        summary=Summary(
+            initial=initial,
+            result=initial,
+            time_complexity="取决于该算法",
+            space_complexity="取决于该算法",
+        ),
+        steps=[
+            Step(
+                step_id=1,
+                phase="unsupported",
+                title="本地演示器暂不支持",
+                description=detail,
+                state={"kind": "unsupported", "request": request.model_dump()},
+                highlights=Highlights(),
+                actions=[
+                    Action(
+                        type="check_condition",
+                        description="JSON 合法，但没有对应的本地可视化模拟器。",
+                        target="dispatcher",
+                    )
+                ],
+                message=detail,
+            )
+        ],
+        warnings=[
+            DSVPWarning(
+                code="UNSUPPORTED_DEMO",
+                message="当前操作暂不支持右侧可视化演示。",
+                detail=detail,
+                recoverable=False,
+            )
+        ],
     )

@@ -1,12 +1,12 @@
 # data-structure-agent-mvp
 
-本科数据结构知识 Agent MVP。当前只覆盖第 2 章“线性表”相关内容，使用本地 Markdown 知识库 + DeepSeek API + Streamlit 页面。
+本科数据结构知识 Agent MVP。当前知识库覆盖本科《数据结构》课程主要章节，使用本地 Markdown 知识库 + DeepSeek API + Streamlit 页面。
 
 这个版本适合课堂展示和小组内试用。
 
 ## 现在能做什么
 
-- 像聊天一样提问线性表问题
+- 像聊天一样提问数据结构课程问题
 - 从 `knowledge/` 目录检索本地教材笔记
 - 基于检索到的内容调用 DeepSeek 回答
 - 演示类问题会输出较完整的教学讲解，包括过程、原因、结果和易错点
@@ -48,9 +48,18 @@ data-structure-agent-mvp/
 ├─ prompts/
 │  └─ system_prompt.txt      # 助教回答约束
 ├─ knowledge/
+│  ├─ introduction.md
 │  ├─ linear_list.md
 │  ├─ sequential_list.md
-│  └─ linked_list.md
+│  ├─ linked_list.md
+│  ├─ stack_queue.md
+│  ├─ string.md
+│  ├─ array_generalized_list.md
+│  ├─ tree_binary_tree.md
+│  ├─ graph.md
+│  ├─ search.md
+│  ├─ internal_sorting.md
+│  └─ external_sorting.md
 ├─ examples/
 │  └─ sample_questions.md
 ├─ requirements.txt
@@ -293,7 +302,7 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 系统会逐步展示顺序表从后向前移动元素，再写入新值。
 
-如果问题超出当前支持范围，例如排序，演示板会提示暂不支持。
+如果问题超出当前可视化演示支持范围，例如排序，右侧演示板会提示暂不支持；左侧问答仍会依据 `knowledge/` 中的课程笔记回答。
 
 ## 测试
 
@@ -356,7 +365,7 @@ gcc --version
 
 ## 后续可以做
 
-- 把 `knowledge/` 按教材继续补全
+- 继续细化 `knowledge/` 中各章节例题、图示和习题讲解
 - 把关键词检索升级为 Chroma 向量检索
 - 给每类操作补更精确的本地模拟器
 - 增加“教师模式 / 学生模式”

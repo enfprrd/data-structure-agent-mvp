@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -20,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
+APP_VERSION = "test-2026-06-03-02"
 
 
 def load_system_prompt() -> str:
@@ -104,7 +106,7 @@ def render_contexts(contexts: list[dict[str, str]]) -> None:
 
 def render_chat_messages(messages: list[dict[str, object]]) -> None:
     if not messages:
-        st.info("问个线性表问题试试。")
+        st.info("问个数据结构课问题试试。")
         return
 
     for message in messages:
@@ -150,6 +152,12 @@ def make_teaching_view(answer: str, show_code: bool) -> tuple[str, list[str]]:
     return visible_answer, code_blocks
 
 
+def finish_generation() -> None:
+    st.session_state.pending_question = ""
+    st.session_state.pending_contexts = []
+    st.session_state.is_generating = False
+
+
 def render_current_trace_demo() -> None:
     trace = st.session_state.get("dsvp_trace")
     request = st.session_state.get("dsvp_request")
@@ -157,14 +165,17 @@ def render_current_trace_demo() -> None:
 
     st.markdown("### 当前演示")
     if clarification:
-        st.caption("从对话中检测到演示意图，但参数还不完整。")
+        st.caption("从对话中检测到演示意图，但 DeepSeek 生成的演示 JSON 没有通过本地自检。")
         st.warning(clarification.message)
         if clarification.missing_fields:
-            st.caption("缺少字段：" + ", ".join(clarification.missing_fields))
+            st.caption("缺失或不合法字段：" + ", ".join(clarification.missing_fields))
+        if clarification.raw:
+            with st.expander("本地自检详情", expanded=False):
+                st.code(clarification.raw)
         return
 
     if trace is None:
-        st.caption("在对话中提出“演示/逐步展示插入删除查找”等需求后，这里会自动出现步骤。")
+        st.caption("在对话中提出“演示/逐步展示”等需求后，这里会自动出现步骤或支持状态。")
         return
 
     steps = trace.steps
@@ -205,16 +216,29 @@ def render_current_trace_demo() -> None:
     prev_col, next_col, reset_col = st.columns(3)
     with prev_col:
         if st.button("上一步", disabled=current == 0, key="chat_demo_prev"):
+            st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_step = current - 1
             st.rerun()
     with next_col:
         if st.button("下一步", disabled=current == len(steps) - 1, key="chat_demo_next"):
+            st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_step = current + 1
             st.rerun()
     with reset_col:
         if st.button("重置", key="chat_demo_reset"):
+            st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_step = 0
             st.rerun()
+    autoplay = st.toggle("自动播放", value=bool(st.session_state.get("dsvp_autoplay", False)), key="chat_demo_autoplay")
+    st.session_state.dsvp_autoplay = autoplay
+
+    if st.session_state.get("dsvp_autoplay"):
+        if current < len(steps) - 1:
+            time.sleep(0.8)
+            st.session_state.dsvp_step = current + 1
+            st.rerun()
+        else:
+            st.session_state.dsvp_autoplay = False
 
     with st.expander("步骤列表", expanded=False):
         for index, item in enumerate(steps):
@@ -290,7 +314,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("本科数据结构知识 Agent MVP")
-    st.caption("当前范围：第 2 章线性表。默认中文回答，默认 C 语言代码。")
+    st.caption(f"当前范围：整门本科数据结构课程知识库。默认中文回答，默认 C 语言代码。版本：{APP_VERSION}")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -306,6 +330,9 @@ def main() -> None:
 
     if "dsvp_step" not in st.session_state:
         st.session_state.dsvp_step = 0
+
+    if "dsvp_autoplay" not in st.session_state:
+        st.session_state.dsvp_autoplay = False
 
     if "dsvp_clarification" not in st.session_state:
         st.session_state.dsvp_clarification = None
@@ -324,6 +351,7 @@ def main() -> None:
         st.write("知识库目录：`knowledge/`")
         st.write("检索：knowledge / Top 3")
         st.write("模型：DeepSeek Chat")
+        st.write(f"版本：`{APP_VERSION}`")
 
         if os.getenv("DEEPSEEK_API_KEY"):
             st.success("已检测到 DEEPSEEK_API_KEY")
@@ -342,6 +370,7 @@ def main() -> None:
             st.session_state.dsvp_request = None
             st.session_state.dsvp_trace = None
             st.session_state.dsvp_step = 0
+            st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_clarification = None
             st.rerun()
 
@@ -369,7 +398,7 @@ def main() -> None:
                 with st.chat_message("assistant"):
                     st.markdown("翻教材中...")
 
-        question = st.chat_input("问一个线性表问题")
+        question = st.chat_input("问一个数据结构课问题")
     if question and not st.session_state.is_generating and not st.session_state.pending_question:
         retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
         conversation_context = build_conversation_context(st.session_state.messages)
@@ -395,18 +424,14 @@ def main() -> None:
     except DeepSeekError as exc:
         answer = f"调用 DeepSeek API 失败：{exc}"
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.pending_question = ""
-        st.session_state.pending_contexts = []
-        st.session_state.is_generating = False
+        finish_generation()
         st.rerun()
         return
 
     if not contexts:
-        answer = "这块教材笔记还没补到，我先不乱讲。"
+        answer = "知识库资料不足，需要补充教材内容。"
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.pending_question = ""
-        st.session_state.pending_contexts = []
-        st.session_state.is_generating = False
+        finish_generation()
         st.rerun()
         return
 
@@ -427,9 +452,7 @@ def main() -> None:
     except DeepSeekError as exc:
         answer = f"调用 DeepSeek API 失败：{exc}"
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.pending_question = ""
-        st.session_state.pending_contexts = []
-        st.session_state.is_generating = False
+        finish_generation()
         st.rerun()
         return
 
@@ -438,83 +461,84 @@ def main() -> None:
         f"用户新问题：\n{question}\n\n"
         f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
     )
-    parsed_demo = parse_operation_request(client, parse_text)
-    needs_demo_code = isinstance(parsed_demo, (OperationRequest, Clarification))
-    show_code = user_wants_code(question)
-    code_check = (
-        check_c_code_in_answer(answer)
-        if show_code or needs_demo_code
-        else check_c_code_in_answer(None)
-    )
-    if needs_demo_code and not code_check.has_code:
-        code_check.needs_fix = True
-        code_check.summary = (
-            "这是演示类问题，但回答末尾没有检测到 ```c 代码块。"
-            "请补充完整可运行 C 程序，供右侧演示板理解数据和操作参数。"
+    try:
+        parsed_demo = parse_operation_request(client, parse_text)
+        needs_demo_code = isinstance(parsed_demo, (OperationRequest, Clarification))
+        show_code = user_wants_code(question)
+        code_check = (
+            check_c_code_in_answer(answer)
+            if show_code or needs_demo_code
+            else check_c_code_in_answer(None)
         )
+        if needs_demo_code and not code_check.has_code:
+            code_check.needs_fix = True
+            code_check.summary = (
+                "这是演示类问题，但回答末尾没有检测到 ```c 代码块。"
+                "请补充完整可运行 C 程序，供右侧演示板理解数据和操作参数。"
+            )
 
-    if (show_code or needs_demo_code) and code_check.needs_fix:
-        fix_messages = messages + [
-            {"role": "assistant", "content": answer},
-            {
-                "role": "user",
-                "content": (
-                    "你刚才生成的 C 代码编译或运行失败。"
-                    "请根据下面错误信息修正，并重新输出完整教学回答和完整可运行 C 代码。"
-                    "教学回答要保留初始状态、操作过程、结果和易错点，不要只输出代码。"
-                    "如果这是演示类问题，修正后的文字、main 中的数据和操作参数必须完全一致。"
-                    "不要提到“重新检查”“修正版”等过程说明，直接给学生最终答案。\n\n"
-                    f"{code_check.summary}"
-                ),
-            },
-        ]
-        try:
-            answer = client.chat(fix_messages)
-            code_check = check_c_code_in_answer(answer)
-        except DeepSeekError as exc:
-            code_check.summary += f"\n\n二次修正调用失败：{exc}"
+        if (show_code or needs_demo_code) and code_check.needs_fix:
+            fix_messages = messages + [
+                {"role": "assistant", "content": answer},
+                {
+                    "role": "user",
+                    "content": (
+                        "你刚才生成的 C 代码编译或运行失败。"
+                        "请根据下面错误信息修正，并重新输出完整教学回答和完整可运行 C 代码。"
+                        "教学回答要保留初始状态、操作过程、结果和易错点，不要只输出代码。"
+                        "如果这是演示类问题，修正后的文字、main 中的数据和操作参数必须完全一致。"
+                        "不要提到“重新检查”“修正版”等内部过程说明，直接给学生最终答案。\n\n"
+                        f"{code_check.summary}"
+                    ),
+                },
+            ]
+            try:
+                answer = client.chat(fix_messages)
+                code_check = check_c_code_in_answer(answer)
+            except DeepSeekError as exc:
+                code_check.summary += f"\n\n二次修正调用失败：{exc}"
 
-        parse_text = (
+        final_parse_text = (
             f"此前完整对话上下文：\n{conversation_context or '暂无。'}\n\n"
             f"用户新问题：\n{question}\n\n"
             f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
         )
-        parsed_demo = parse_operation_request(client, parse_text)
+        parsed_demo = parse_operation_request(client, final_parse_text)
+        if isinstance(parsed_demo, OperationRequest):
+            st.session_state.dsvp_request = parsed_demo
+            st.session_state.dsvp_trace = dispatch(parsed_demo)
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_autoplay = False
+            st.session_state.dsvp_clarification = None
+        elif isinstance(parsed_demo, Clarification):
+            st.session_state.dsvp_clarification = parsed_demo
+            st.session_state.dsvp_request = None
+            st.session_state.dsvp_trace = None
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_autoplay = False
+        else:
+            st.session_state.dsvp_clarification = None
 
-    final_parse_text = (
-        f"此前完整对话上下文：\n{conversation_context or '暂无。'}\n\n"
-        f"用户新问题：\n{question}\n\n"
-        f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
-    )
-    parsed_demo = parse_operation_request(client, final_parse_text)
-    if isinstance(parsed_demo, OperationRequest):
-        st.session_state.dsvp_request = parsed_demo
-        st.session_state.dsvp_trace = dispatch(parsed_demo)
-        st.session_state.dsvp_step = 0
-        st.session_state.dsvp_clarification = None
-    elif isinstance(parsed_demo, Clarification):
-        st.session_state.dsvp_clarification = parsed_demo
-        st.session_state.dsvp_request = None
-        st.session_state.dsvp_trace = None
-        st.session_state.dsvp_step = 0
-    else:
-        st.session_state.dsvp_clarification = None
-
-    visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
-    message_id = len(st.session_state.messages)
-    st.session_state.messages.append(
-        {
-            "id": message_id,
-            "role": "assistant",
-            "content": answer if user_wants_code(question) else visible_answer,
-            "code_blocks": code_blocks if not user_wants_code(question) else [],
-            "show_code": user_wants_code(question),
-            "code_check": code_check.summary if code_check.has_code else "",
-        }
-    )
-    st.session_state.pending_question = ""
-    st.session_state.pending_contexts = []
-    st.session_state.is_generating = False
+        visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
+        message_id = len(st.session_state.messages)
+        st.session_state.messages.append(
+            {
+                "id": message_id,
+                "role": "assistant",
+                "content": answer if user_wants_code(question) else visible_answer,
+                "code_blocks": code_blocks if not user_wants_code(question) else [],
+                "show_code": user_wants_code(question),
+                "code_check": code_check.summary if code_check.has_code else "",
+            }
+        )
+    except Exception as exc:
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": f"本轮生成时出现异常，已自动恢复输入状态。错误信息：{exc}",
+            }
+        )
+    finish_generation()
     st.rerun()
 
 
