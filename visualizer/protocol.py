@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 
 SUPPORTED_STRUCTURES = {"sequential_list", "singly_linked_list", "stack", "queue"}
-SUPPORTED_OPERATIONS = {"insert", "delete", "search", "push", "pop", "enqueue", "dequeue"}
+SUPPORTED_OPERATIONS = {"insert", "delete", "search", "build", "push", "pop", "enqueue", "dequeue"}
 SUPPORTED_ACTION_TYPES = {
     "check_condition",
     "create_node",
@@ -71,7 +71,7 @@ class RequestOptions(ProtocolModel):
 class OperationRequest(ProtocolModel):
     version: str = "1.0"
     structure: Literal["sequential_list", "singly_linked_list", "stack", "queue"]
-    operation: Literal["insert", "delete", "search", "push", "pop", "enqueue", "dequeue"]
+    operation: Literal["insert", "delete", "search", "build", "push", "pop", "enqueue", "dequeue"]
     params: RequestParams = Field(default_factory=RequestParams)
     initial_state: InitialState
     options: RequestOptions = Field(default_factory=RequestOptions)
@@ -80,7 +80,7 @@ class OperationRequest(ProtocolModel):
     def validate_supported_pair_and_params(self) -> "OperationRequest":
         allowed = {
             "sequential_list": {"insert", "delete", "search"},
-            "singly_linked_list": {"insert", "delete", "search"},
+            "singly_linked_list": {"insert", "delete", "search", "build"},
             "stack": {"push", "pop"},
             "queue": {"enqueue", "dequeue"},
         }
@@ -94,6 +94,8 @@ class OperationRequest(ProtocolModel):
             missing.append("params.value")
         if self.operation == "search" and self.params.target is None:
             missing.append("params.target")
+        if self.operation == "build" and not self.params.values:
+            missing.append("params.values")
         if missing:
             raise ValueError("缺少必要字段：" + ", ".join(missing))
         return self

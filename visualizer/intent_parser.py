@@ -9,9 +9,22 @@ from pydantic import ValidationError
 from visualizer.protocol import Clarification, OperationRequest, validation_to_clarification
 
 
-PARSER_SYSTEM_PROMPT = """你是数据结构演示请求解析器。
-你只能把用户自然语言解析为 OperationRequest JSON，不能生成演示步骤、动画、指针变化或数组移动过程。
+PARSER_SYSTEM_PROMPT = """你是数据结构演示意图与请求解析器。
+你只能判断是否需要演示，并在需要演示时把自然语言、助手回答和 C 代码规整为 OperationRequest JSON。
+你不能生成演示步骤、动画、指针变化或数组移动过程。
 只输出严格 JSON，不要 Markdown，不要解释。
+
+先判断用户新问题是否需要右侧演示：
+- 如果不需要演示，输出：{"needs_demo": false}
+- 如果需要演示，输出 needs_demo=true，并给出完整 OperationRequest。
+- 用户说“演示一下”“展示一下”“继续演示”时，要结合此前完整对话上下文，使用最近的主题和最近可用的数据。
+- 如果输入中包含“助手刚刚输出的回答（包含用于演示理解的 C 代码）”，必须优先依据这段回答和其中 C 代码判断演示参数。
+- C 代码中的 main、初始化数据、调用的操作函数、实参 position/value/target 是最高优先级依据。
+- 如果文字讲解和 C 代码冲突，以 C 代码为准。
+- 如果最近主题是“头插法建表”或 C 代码是在循环调用头插函数建立链表，operation 必须是 build，params.mode 必须是 head_insert，params.values 必须保持代码/main 中的输入顺序。
+- 如果最近主题是“尾插法建表”或 C 代码是在循环调用尾插函数建立链表，operation 必须是 build，params.mode 必须是 tail_insert，params.values 必须保持代码/main 中的输入顺序。
+- 注意 values 表示输入顺序，不是最终链表顺序。比如依次头插 30、20、10，应输出 values=[30,20,10]，本地模拟器会得到 10->20->30。
+- 只有“在已有链表某个位置插入一个新元素”才使用 operation=insert。
 
 第一阶段 structure 只能是：
 - sequential_list
@@ -23,6 +36,7 @@ PARSER_SYSTEM_PROMPT = """你是数据结构演示请求解析器。
 - insert
 - delete
 - search
+- build
 - push
 - pop
 - enqueue
@@ -33,11 +47,12 @@ PARSER_SYSTEM_PROMPT = """你是数据结构演示请求解析器。
 - 单链表默认带头结点。
 - 顺序表、栈、队列默认 capacity 为 10，除非用户明确给出容量。
 
-如果用户缺少 initial_state.data、position、value、target 等必要信息，输出：
-{"needs_clarification": true, "message": "说明缺少什么", "missing_fields": ["..."]}
+如果用户需要演示，但结合上下文仍缺少 initial_state.data、position、value、target 等必要信息，输出：
+{"needs_demo": true, "needs_clarification": true, "message": "说明缺少什么", "missing_fields": ["..."]}
 
 合法 OperationRequest 必须使用 params 包裹操作参数，例如：
 {
+  "needs_demo": true,
   "version": "1.0",
   "structure": "singly_linked_list",
   "operation": "insert",
@@ -45,14 +60,21 @@ PARSER_SYSTEM_PROMPT = """你是数据结构演示请求解析器。
   "initial_state": {"data": [3, 5, 7], "metadata": {"index_base": 1, "use_head_node": true, "capacity": 10}},
   "options": {"language": "c", "explain_level": "beginner"}
 }
+
+头插建表示例：
+{
+  "needs_demo": true,
+  "version": "1.0",
+  "structure": "singly_linked_list",
+  "operation": "build",
+  "params": {"mode": "head_insert", "values": [30, 20, 10]},
+  "initial_state": {"data": [], "metadata": {"index_base": 1, "use_head_node": true, "capacity": 10}},
+  "options": {"language": "c", "explain_level": "beginner"}
+}
 """
 
 
-def parse_operation_request(client: Any, text: str) -> OperationRequest | Clarification:
-    local_request = infer_operation_request_locally(text)
-    if local_request is not None:
-        return local_request
-
+def parse_operation_request(client: Any, text: str) -> OperationRequest | Clarification | None:
     raw = ""
     try:
         raw = client.chat(
@@ -68,17 +90,14 @@ def parse_operation_request(client: Any, text: str) -> OperationRequest | Clarif
 
     payload = _load_json(raw)
     if payload is None:
-        local_request = infer_operation_request_locally(f"{text}\n{raw}")
-        if local_request is not None:
-            return local_request
         return Clarification(message="DeepSeek 返回的不是合法 JSON，请重新描述演示需求。", raw=raw)
 
     payload = _normalize_payload(payload)
 
+    if payload.get("needs_demo") is False:
+        return None
+
     if isinstance(payload, dict) and payload.get("needs_clarification"):
-        local_request = infer_operation_request_locally(f"{text}\n{raw}")
-        if local_request is not None:
-            return local_request
         return Clarification(
             message=str(payload.get("message") or "演示参数还不完整，请补充。"),
             missing_fields=[str(item) for item in payload.get("missing_fields", []) if item],
@@ -88,9 +107,6 @@ def parse_operation_request(client: Any, text: str) -> OperationRequest | Clarif
     try:
         return OperationRequest.model_validate(payload)
     except ValidationError as exc:
-        local_request = infer_operation_request_locally(f"{text}\n{raw}")
-        if local_request is not None:
-            return local_request
         return validation_to_clarification(exc, raw=raw)
 
 
@@ -100,66 +116,6 @@ def parse_operation_request_payload(payload: dict[str, Any]) -> OperationRequest
         return OperationRequest.model_validate(payload)
     except ValidationError as exc:
         return validation_to_clarification(exc, raw=json.dumps(payload, ensure_ascii=False))
-
-
-def infer_operation_request_locally(text: str) -> OperationRequest | None:
-    compact = text.replace(" ", "")
-    if not any(word in compact for word in ("演示", "展示", "可视化", "逐步", "一步步", "插入", "删除", "查找", "头插", "尾插")):
-        return None
-
-    linked_data = _extract_linked_initial_data(text)
-    sequence_data = _extract_sequence_data(text)
-    operation = _infer_operation(text)
-    structure = _infer_structure(text, linked_data, sequence_data)
-    insert_mode = _infer_insert_mode(text)
-    value = _infer_value(text, operation)
-    target = _infer_target(text)
-    position = _infer_position(text, operation, insert_mode)
-
-    if structure == "singly_linked_list":
-        data = linked_data or sequence_data
-        if operation == "insert" and insert_mode == "head" and position is None:
-            position = 1
-        if operation == "insert" and position == 1 and value is not None and data and data[0] == value:
-            data = data[1:]
-        if operation == "insert" and insert_mode == "tail" and data:
-            position = len(data) + 1
-        metadata = {"index_base": 1, "use_head_node": True, "capacity": 10}
-    elif structure == "sequential_list":
-        data = sequence_data or linked_data
-        metadata = {"index_base": 1, "capacity": 10}
-    else:
-        return None
-
-    params: dict[str, Any] = {"mode": "by_position"}
-    if operation in {"insert", "delete"}:
-        if position is None:
-            return None
-        params["position"] = position
-    if operation == "insert":
-        if value is None:
-            return None
-        params["value"] = value
-    if operation == "search":
-        if target is None:
-            return None
-        params["target"] = target
-
-    if not data:
-        return None
-
-    payload = {
-        "version": "1.0",
-        "structure": structure,
-        "operation": operation,
-        "params": params,
-        "initial_state": {"data": data, "metadata": metadata},
-        "options": {"language": "c", "explain_level": "beginner"},
-    }
-    try:
-        return OperationRequest.model_validate(payload)
-    except ValidationError:
-        return None
 
 
 def _load_json(raw: str) -> dict[str, Any] | None:
@@ -180,123 +136,12 @@ def _load_json(raw: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _infer_structure(text: str, linked_data: list[int], sequence_data: list[int]) -> str | None:
-    if any(word in text for word in ("单链表", "链表", "head->next", "head ->", "头插", "尾插")) or linked_data:
-        return "singly_linked_list"
-    if any(word in text for word in ("顺序表", "线性表", "数组")) or sequence_data:
-        return "sequential_list"
-    return None
-
-
-def _infer_operation(text: str) -> str:
-    if any(word in text for word in ("删除", "删去")):
-        return "delete"
-    if "查找" in text:
-        return "search"
-    return "insert"
-
-
-def _infer_insert_mode(text: str) -> str | None:
-    head_index = max(text.rfind("头插"), text.rfind("表头插入"), text.rfind("head->next"))
-    tail_index = max(text.rfind("尾插"), text.rfind("表尾插入"), text.rfind("尾部插入"), text.rfind("r->next"))
-    if head_index < 0 and tail_index < 0:
-        return None
-    return "tail" if tail_index > head_index else "head"
-
-
-def _extract_linked_initial_data(text: str) -> list[int]:
-    direct_matches = re.findall(r"用\s*([0-9,\s，、-]+)\s*演示\s*(?:带头结点)?单?链表", text)
-    if direct_matches:
-        values = [int(item) for item in re.findall(r"-?\d+", direct_matches[-1])]
-        if values:
-            return values
-
-    candidates = re.findall(
-        r"(?:初始(?:链表)?|当前(?:带头结点)?单链表)[：:\s]*head\s*(?:->|→)\s*([^\n\r]*?)\s*(?:->|→)\s*NULL",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if candidates:
-        candidates = [candidates[-1]]
-    if not candidates:
-        candidates = re.findall(
-            r"(?<!结果[：:])head\s*(?:->|→)\s*([^\n\r]*?)\s*(?:->|→)\s*NULL",
-            text,
-            flags=re.IGNORECASE,
-        )
-    if not candidates:
-        return []
-
-    for candidate in candidates:
-        values = [int(item) for item in re.findall(r"-?\d+", candidate)]
-        if values:
-            return values
-    return []
-
-
-def _extract_sequence_data(text: str) -> list[int]:
-    patterns = [
-        r"用\s*顺序表\s*([0-9,\s，、-]+)\s*演示",
-        r"顺序表\s*\[([0-9,\s，、-]+)\]",
-        r"\[([0-9,\s，、-]+)\]",
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            values = [int(item) for item in re.findall(r"-?\d+", matches[-1])]
-            if values:
-                return values
-    return []
-
-
-def _infer_position(text: str, operation: str, insert_mode: str | None = None) -> int | None:
-    if insert_mode == "head":
-        return 1
-    if insert_mode == "tail":
-        return None
-    match = re.search(r"第\s*(\d+)\s*(?:位|个|位置)", text)
-    if match:
-        return int(match.group(1))
-    match = re.search(r'"position"\s*:\s*(\d+)', text)
-    if match:
-        return int(match.group(1))
-    if operation == "insert" and "表头" in text:
-        return 1
-    return None
-
-
-def _infer_value(text: str, operation: str) -> int | None:
-    if operation != "insert":
-        return None
-    patterns = [
-        r"插入\s*(?:元素|新结点)?\s*(-?\d+)",
-        r"(?:s->data|data)\s*=\s*(-?\d+)",
-        r"新结点\s*s?[：:\s]*(-?\d+)",
-        r"用头插法插入\s*(-?\d+)",
-        r"插入\s*`?(-?\d+)`?",
-        r'"value"\s*:\s*(-?\d+)',
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            return int(matches[-1])
-    return None
-
-
-def _infer_target(text: str) -> int | None:
-    patterns = [
-        r"查找\s*(-?\d+)",
-        r"目标(?:值)?\s*[：:=]\s*(-?\d+)",
-        r'"target"\s*:\s*(-?\d+)',
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            return int(matches[-1])
-    return None
-
-
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("needs_demo") is True and isinstance(payload.get("request"), dict):
+        wrapped = dict(payload["request"])
+        wrapped["needs_demo"] = True
+        payload = wrapped
+
     normalized = dict(payload)
     params = normalized.get("params")
     if not isinstance(params, dict):

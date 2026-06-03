@@ -9,6 +9,7 @@
 - 像聊天一样提问线性表问题
 - 从 `knowledge/` 目录检索本地教材笔记
 - 基于检索到的内容调用 DeepSeek 回答
+- 演示类问题会输出较完整的教学讲解，包括过程、原因、结果和易错点
 - 发送完整历史对话，支持连续追问
 - 右侧显示从对话中自动提取的交互演示板，可以点“上一步 / 下一步”
 - 普通问题默认隐藏 C 代码
@@ -22,6 +23,7 @@
 - 单链表插入
 - 单链表删除
 - 单链表查找
+- 单链表头插法 / 尾插法建表
 - 栈 push / pop
 - 队列 enqueue / dequeue
 
@@ -210,21 +212,25 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 ```text
 用户自然语言
--> DeepSeek 只解析为 OperationRequest JSON
+-> DeepSeek 判断是否需要演示
+-> 若需要演示，左侧回答必须输出完整可运行 C 程序
+-> DeepSeek 根据用户问题、助手回答和 C 代码规整为 OperationRequest JSON
 -> Pydantic 校验 schema 和必要字段
 -> dispatcher 调用本地纯函数模拟器
 -> 模拟器输出 VisualizationTrace JSON
 -> Streamlit 根据 state.kind 渲染每一步
 ```
 
-这样可以保证数组移动、链表指针变化、栈顶变化、队头队尾变化都由本地可验证代码决定。
+演示是否触发、演示参数是什么，都由 DeepSeek 根据当前问题、完整历史对话、助手刚输出的文字和 C 代码判断；本地不再用关键词或正则去猜演示意图和参数。
+演示类回答的 C 代码会被优先作为右侧演示板理解数据、操作和值的依据。
+数组移动、链表指针变化、栈顶变化、队头队尾变化仍然由本地可验证代码决定。
 
 ### OperationRequest
 
 第一阶段支持：
 
 - `structure`: `sequential_list`, `singly_linked_list`, `stack`, `queue`
-- `operation`: `insert`, `delete`, `search`, `push`, `pop`, `enqueue`, `dequeue`
+- `operation`: `insert`, `delete`, `search`, `build`, `push`, `pop`, `enqueue`, `dequeue`
 
 示例：
 

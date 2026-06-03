@@ -45,8 +45,19 @@ def build_user_prompt(
 {question}
 
 请严格依据上面的本地教材知识库片段回答。若资料不足，只说明“知识库资料不足，需要补充教材内容”，不要自由扩展未检索到的知识。
-回答要自然、紧凑，像助教直接讲题，不要写成报告。
-无论用户是否明确要求代码，都要在回答末尾给出一个简短的 C 语言代码块，供网页演示板和自动检查使用。"""
+回答要像课堂助教讲题：先解释核心概念，再讲操作过程，最后点出易错点；不要只给一两句结论。
+如果用户问的是演示、插入、删除、查找、建表、代码运行过程，回答至少包含：
+- 本次例子的初始状态和目标
+- 操作过程的分步解释
+- 每个关键指针或数组移动为什么这么做
+- 最终结果
+- 1 到 3 个易错点
+如果用户是在要求演示、展示、逐步操作、继续演示，或问题具有演示意图，回答末尾必须给出一个完整可运行的 C 程序：
+- 必须包含 #include、结构体定义、核心操作函数、打印函数和 main。
+- main 中的数据、操作和值必须和你的文字讲解完全一致。
+- 文字讲解中必须明确写出：初始数据、数据结构、操作类型，以及 position/value/target 等操作参数。
+- 这份 C 代码会作为右侧演示板理解演示意图和参数的依据。
+如果用户不是在要求演示，也没有明确要求完整代码，回答末尾保留一个简短 C 语言代码块即可。"""
 
 
 def build_conversation_context(messages: list[dict[str, object]]) -> str:
@@ -137,29 +148,6 @@ def make_teaching_view(answer: str, show_code: bool) -> tuple[str, list[str]]:
     )
     visible_answer = re.sub(r"\n{3,}", "\n\n", visible_answer).strip()
     return visible_answer, code_blocks
-
-
-def question_may_need_demo(question: str) -> bool:
-    demo_words = [
-        "演示",
-        "展示",
-        "可视化",
-        "动画",
-        "一步步",
-        "逐步",
-        "插入",
-        "删除",
-        "查找",
-        "入栈",
-        "出栈",
-        "入队",
-        "出队",
-        "push",
-        "pop",
-        "enqueue",
-        "dequeue",
-    ]
-    return any(word in question.lower() for word in demo_words)
 
 
 def render_current_trace_demo() -> None:
@@ -413,28 +401,8 @@ def main() -> None:
         st.rerun()
         return
 
-    if question_may_need_demo(question):
-        parse_text = (
-            f"此前完整对话上下文：\n{conversation_context}\n\n"
-            f"用户新问题：\n{question}"
-        )
-        parsed_demo = parse_operation_request(client, parse_text)
-        if isinstance(parsed_demo, OperationRequest):
-            st.session_state.dsvp_request = parsed_demo
-            st.session_state.dsvp_trace = dispatch(parsed_demo)
-            st.session_state.dsvp_step = 0
-            st.session_state.dsvp_clarification = None
-        elif any(word in question for word in ["演示", "展示", "可视化", "一步步", "逐步"]):
-            st.session_state.dsvp_clarification = parsed_demo
-            st.session_state.dsvp_request = None
-            st.session_state.dsvp_trace = None
-            st.session_state.dsvp_step = 0
-
     if not contexts:
-        if st.session_state.dsvp_trace is not None:
-            answer = "已根据你的对话在右侧生成本地演示步骤。知识库没有检索到高相关片段，所以文字讲解我先不扩展。"
-        else:
-            answer = "这块教材笔记还没补到，我先不乱讲。"
+        answer = "这块教材笔记还没补到，我先不乱讲。"
         st.session_state.messages.append({"role": "assistant", "content": answer})
         st.session_state.pending_question = ""
         st.session_state.pending_contexts = []
@@ -465,21 +433,36 @@ def main() -> None:
         st.rerun()
         return
 
+    parse_text = (
+        f"此前完整对话上下文：\n{conversation_context or '暂无。'}\n\n"
+        f"用户新问题：\n{question}\n\n"
+        f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
+    )
+    parsed_demo = parse_operation_request(client, parse_text)
+    needs_demo_code = isinstance(parsed_demo, (OperationRequest, Clarification))
     show_code = user_wants_code(question)
     code_check = (
         check_c_code_in_answer(answer)
-        if show_code
+        if show_code or needs_demo_code
         else check_c_code_in_answer(None)
     )
+    if needs_demo_code and not code_check.has_code:
+        code_check.needs_fix = True
+        code_check.summary = (
+            "这是演示类问题，但回答末尾没有检测到 ```c 代码块。"
+            "请补充完整可运行 C 程序，供右侧演示板理解数据和操作参数。"
+        )
 
-    if show_code and code_check.needs_fix:
+    if (show_code or needs_demo_code) and code_check.needs_fix:
         fix_messages = messages + [
             {"role": "assistant", "content": answer},
             {
                 "role": "user",
                 "content": (
                     "你刚才生成的 C 代码编译或运行失败。"
-                    "请根据下面错误信息修正，并重新输出完整回答和完整可运行 C 代码。"
+                    "请根据下面错误信息修正，并重新输出完整教学回答和完整可运行 C 代码。"
+                    "教学回答要保留初始状态、操作过程、结果和易错点，不要只输出代码。"
+                    "如果这是演示类问题，修正后的文字、main 中的数据和操作参数必须完全一致。"
                     "不要提到“重新检查”“修正版”等过程说明，直接给学生最终答案。\n\n"
                     f"{code_check.summary}"
                 ),
@@ -490,6 +473,32 @@ def main() -> None:
             code_check = check_c_code_in_answer(answer)
         except DeepSeekError as exc:
             code_check.summary += f"\n\n二次修正调用失败：{exc}"
+
+        parse_text = (
+            f"此前完整对话上下文：\n{conversation_context or '暂无。'}\n\n"
+            f"用户新问题：\n{question}\n\n"
+            f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
+        )
+        parsed_demo = parse_operation_request(client, parse_text)
+
+    final_parse_text = (
+        f"此前完整对话上下文：\n{conversation_context or '暂无。'}\n\n"
+        f"用户新问题：\n{question}\n\n"
+        f"助手刚刚输出的回答（包含用于演示理解的 C 代码）：\n{answer}"
+    )
+    parsed_demo = parse_operation_request(client, final_parse_text)
+    if isinstance(parsed_demo, OperationRequest):
+        st.session_state.dsvp_request = parsed_demo
+        st.session_state.dsvp_trace = dispatch(parsed_demo)
+        st.session_state.dsvp_step = 0
+        st.session_state.dsvp_clarification = None
+    elif isinstance(parsed_demo, Clarification):
+        st.session_state.dsvp_clarification = parsed_demo
+        st.session_state.dsvp_request = None
+        st.session_state.dsvp_trace = None
+        st.session_state.dsvp_step = 0
+    else:
+        st.session_state.dsvp_clarification = None
 
     visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
     message_id = len(st.session_state.messages)

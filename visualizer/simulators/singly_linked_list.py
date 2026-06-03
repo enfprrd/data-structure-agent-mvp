@@ -69,11 +69,109 @@ def _step(
 
 
 def simulate_singly_linked_list(request: OperationRequest) -> VisualizationTrace:
+    if request.operation == "build":
+        return simulate_build(request)
     if request.operation == "insert":
         return simulate_insert(request)
     if request.operation == "delete":
         return simulate_delete(request)
     return simulate_search(request)
+
+
+def simulate_build(request: OperationRequest) -> VisualizationTrace:
+    initial_data = list(request.initial_state.data)
+    values = list(request.params.values or [])
+    mode = request.params.mode or "head_insert"
+    initial = _text(initial_data)
+    current = list(initial_data)
+    steps: list[Step] = [
+        _step(
+            1,
+            "init",
+            "初始链表状态",
+            f"当前带头结点单链表为 {_text(current)}，准备按输入序列 {values} 建表。",
+            current,
+            [],
+        )
+    ]
+    step_id = 2
+    for value in values:
+        steps.append(
+            _step(
+                step_id,
+                "create",
+                f"创建新结点 {value}",
+                f"申请新结点 s，并将数据域写入 {value}。",
+                current,
+                [Action(type="create_node", description="创建新结点 s。", target="s", value=value)],
+                pointers={"s": "s"},
+                pointer_role=("s", "new"),
+            )
+        )
+        step_id += 1
+
+        if mode == "tail_insert":
+            tail_target = f"n{len(current) - 1}" if current else "head"
+            current = current + [value]
+            steps.append(
+                _step(
+                    step_id,
+                    "link",
+                    f"尾插 {value}",
+                    "执行 r->next = s，再令 r = s，新结点成为尾结点。",
+                    current,
+                    [
+                        Action(type="link", description="r->next = s。", target="r->next", **{"from": tail_target}, to="s"),
+                        Action(type="move", description="r = s。", target="r", to="s"),
+                    ],
+                    f"n{len(current) - 1}",
+                    "new",
+                    pointers={"r": f"n{len(current) - 1}"},
+                    pointer_role=("r", "changed"),
+                )
+            )
+        else:
+            old_first = "n0" if current else "NULL"
+            current = [value] + current
+            steps.append(
+                _step(
+                    step_id,
+                    "link",
+                    f"头插 {value}",
+                    "先执行 s->next = head->next，再执行 head->next = s，新结点成为首元结点。",
+                    current,
+                    [
+                        Action(type="link", description="s->next = head->next。", target="s->next", **{"from": "s"}, to=old_first),
+                        Action(type="link", description="head->next = s。", target="head->next", **{"from": "head"}, to="s"),
+                    ],
+                    "n0",
+                    "new",
+                    pointers={"s": "n0"},
+                    pointer_role=("s", "new"),
+                )
+            )
+        step_id += 1
+
+    steps.append(
+        _step(
+            step_id,
+            "done",
+            "建表完成",
+            f"结果为 {_text(current)}。",
+            current,
+            [],
+            "n0" if current else None,
+            "success",
+        )
+    )
+    title = "单链表头插法建表演示" if mode != "tail_insert" else "单链表尾插法建表演示"
+    return VisualizationTrace(
+        title=title,
+        structure=request.structure,
+        operation=request.operation,
+        summary=Summary(initial=initial, result=_text(current), time_complexity="O(n)", space_complexity="O(1)"),
+        steps=steps,
+    )
 
 
 def simulate_insert(request: OperationRequest) -> VisualizationTrace:
