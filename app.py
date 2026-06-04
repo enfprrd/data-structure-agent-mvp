@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import time
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
+import auth_store
 from code_checker import check_c_code_in_answer
 from llm import DeepSeekClient, DeepSeekError, load_dotenv
 from rag import MarkdownKeywordRetriever
@@ -49,6 +52,63 @@ def build_app_version() -> str:
 
 
 APP_VERSION = build_app_version()
+
+
+def bootstrap_device_token() -> str:
+    token = str(st.query_params.get("device_id", "")).strip()
+    if token:
+        components.html(
+            f"""
+            <script>
+            document.cookie = "ds_agent_device_id={token}; path=/; max-age=31536000; SameSite=Lax";
+            </script>
+            """,
+            height=0,
+        )
+        return token
+
+    fallback = st.session_state.get("device_token") or secrets.token_urlsafe(24)
+    st.session_state.device_token = fallback
+    components.html(
+        f"""
+        <script>
+        const name = "ds_agent_device_id=";
+        const hit = document.cookie.split(";").map(v => v.trim()).find(v => v.startsWith(name));
+        let token = hit ? hit.substring(name.length) : "{fallback}";
+        if (!hit) {{
+            document.cookie = "ds_agent_device_id=" + token + "; path=/; max-age=31536000; SameSite=Lax";
+        }}
+        const url = new URL(window.parent.location.href);
+        if (!url.searchParams.get("device_id")) {{
+            url.searchParams.set("device_id", token);
+            window.parent.history.replaceState(null, "", url.toString());
+            window.parent.location.reload();
+        }}
+        </script>
+        """,
+        height=0,
+    )
+    return fallback
+
+
+def append_chat_message(message: dict[str, object]) -> None:
+    st.session_state.messages.append(message)
+    conversation_id = st.session_state.get("conversation_id")
+    if conversation_id:
+        auth_store.append_message(int(conversation_id), message)
+
+
+def load_persisted_messages() -> None:
+    conversation_id = st.session_state.get("conversation_id")
+    loaded_key = (
+        int(conversation_id or 0),
+        st.session_state.get("user_id"),
+        st.session_state.get("device_token"),
+    )
+    if st.session_state.get("loaded_history_key") == loaded_key:
+        return
+    st.session_state.messages = auth_store.load_messages(int(conversation_id)) if conversation_id else []
+    st.session_state.loaded_history_key = loaded_key
 
 
 def load_system_prompt() -> str:
@@ -208,6 +268,63 @@ def render_contexts(contexts: list[dict[str, str]]) -> None:
             st.divider()
 
 
+def render_auth_panel() -> None:
+    st.markdown("账号：")
+    user_id = st.session_state.get("user_id")
+    username = st.session_state.get("username")
+    if user_id:
+        st.success(f"已登录：{username}")
+        if st.button("退出登录"):
+            st.session_state.user_id = None
+            st.session_state.username = ""
+            device_id = auth_store.ensure_device(str(st.session_state.device_token), None)
+            st.session_state.device_id = device_id
+            st.session_state.conversation_id = auth_store.get_or_create_conversation(None, device_id)
+            st.session_state.loaded_history_key = None
+            load_persisted_messages()
+            st.rerun()
+        return
+
+    st.caption("未登录也会按当前设备保存历史。")
+    login_tab, register_tab = st.tabs(["登录", "注册"])
+    with login_tab:
+        with st.form("login_form", clear_on_submit=False):
+            username_input = st.text_input("用户名", key="login_username")
+            password_input = st.text_input("密码", type="password", key="login_password")
+            submitted = st.form_submit_button("登录")
+        if submitted:
+            ok, message, user = auth_store.authenticate_user(username_input, password_input)
+            if ok and user:
+                st.session_state.user_id = int(user["id"])
+                st.session_state.username = str(user["username"])
+                auth_store.bind_device_to_user(int(st.session_state.device_id), int(user["id"]))
+                st.session_state.conversation_id = auth_store.get_or_create_conversation(int(user["id"]), int(st.session_state.device_id))
+                st.session_state.loaded_history_key = None
+                load_persisted_messages()
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+    with register_tab:
+        with st.form("register_form", clear_on_submit=False):
+            username_input = st.text_input("用户名", key="register_username")
+            password_input = st.text_input("密码", type="password", key="register_password")
+            submitted = st.form_submit_button("注册并登录")
+        if submitted:
+            ok, message, user = auth_store.create_user(username_input, password_input)
+            if ok and user:
+                st.session_state.user_id = int(user["id"])
+                st.session_state.username = str(user["username"])
+                auth_store.bind_device_to_user(int(st.session_state.device_id), int(user["id"]))
+                st.session_state.conversation_id = auth_store.get_or_create_conversation(int(user["id"]), int(st.session_state.device_id))
+                st.session_state.loaded_history_key = None
+                load_persisted_messages()
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+
 def render_chat_messages(messages: list[dict[str, object]]) -> None:
     if not messages:
         st.info("问个数据结构课问题试试。")
@@ -346,6 +463,7 @@ def render_current_trace_demo() -> None:
 
 def main() -> None:
     load_dotenv()
+    auth_store.init_db()
 
     st.set_page_config(page_title="本科数据结构知识 Agent MVP", page_icon="📚")
     st.markdown(
@@ -451,6 +569,19 @@ def main() -> None:
     st.title("本科数据结构知识 Agent MVP")
     st.caption(f"当前范围：整门本科数据结构课程知识库。默认中文回答，默认 C 语言代码。版本：{APP_VERSION}")
 
+    device_token = bootstrap_device_token()
+    st.session_state.device_token = device_token
+
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = None
+    if "username" not in st.session_state:
+        st.session_state.username = ""
+
+    device_id = auth_store.ensure_device(device_token, st.session_state.get("user_id"))
+    st.session_state.device_id = device_id
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = auth_store.get_or_create_conversation(st.session_state.get("user_id"), device_id)
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -487,6 +618,8 @@ def main() -> None:
     if "pending_contexts" not in st.session_state:
         st.session_state.pending_contexts = []
 
+    load_persisted_messages()
+
     with st.sidebar:
         st.header("运行状态")
         st.write("知识库目录：`knowledge/`")
@@ -500,8 +633,12 @@ def main() -> None:
             st.warning("未检测到 DEEPSEEK_API_KEY。建议在项目根目录创建 `.env` 文件。")
 
         st.divider()
+        render_auth_panel()
+
+        st.divider()
         st.markdown("上下文：")
         st.caption(f"将发送完整历史对话：{len(st.session_state.messages)} 条")
+        st.caption(f"设备：`{str(st.session_state.device_token)[:8]}...`")
         if st.session_state.pending_question:
             st.caption(f"待处理问题：{st.session_state.pending_question}")
         if st.button("恢复生成状态"):
@@ -509,6 +646,8 @@ def main() -> None:
             st.rerun()
         if st.button("清空"):
             st.session_state.messages = []
+            if st.session_state.get("conversation_id"):
+                auth_store.clear_messages(int(st.session_state.conversation_id))
             st.session_state.last_contexts = []
             st.session_state.pending_question = ""
             st.session_state.pending_effective_question = ""
@@ -558,7 +697,7 @@ def main() -> None:
         effective_question = build_effective_question(question, st.session_state.messages, rewrite_client)
         contexts = retriever.retrieve(effective_question, top_k=3)
         st.session_state.last_contexts = contexts
-        st.session_state.messages.append({"role": "user", "content": question})
+        append_chat_message({"role": "user", "content": question})
         st.session_state.pending_question = question
         st.session_state.pending_effective_question = effective_question
         st.session_state.pending_contexts = contexts
@@ -579,14 +718,14 @@ def main() -> None:
         client = DeepSeekClient()
     except DeepSeekError as exc:
         answer = f"调用 DeepSeek API 失败：{exc}"
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        append_chat_message({"role": "assistant", "content": answer})
         finish_generation()
         st.rerun()
         return
 
     if not contexts:
         answer = "知识库资料不足，需要补充教材内容。"
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        append_chat_message({"role": "assistant", "content": answer})
         finish_generation()
         st.rerun()
         return
@@ -607,7 +746,7 @@ def main() -> None:
         answer = client.chat(messages)
     except DeepSeekError as exc:
         answer = f"调用 DeepSeek API 失败：{exc}"
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        append_chat_message({"role": "assistant", "content": answer})
         finish_generation()
         st.rerun()
         return
@@ -677,7 +816,7 @@ def main() -> None:
 
         visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
         message_id = len(st.session_state.messages)
-        st.session_state.messages.append(
+        append_chat_message(
             {
                 "id": message_id,
                 "role": "assistant",
@@ -688,7 +827,7 @@ def main() -> None:
             }
         )
     except Exception as exc:
-        st.session_state.messages.append(
+        append_chat_message(
             {
                 "role": "assistant",
                 "content": f"本轮生成时出现异常，已自动恢复输入状态。错误信息：{exc}",
