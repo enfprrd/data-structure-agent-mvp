@@ -4,6 +4,7 @@ from typing import Any
 
 from visualizer.protocol import Action, Highlights, OperationRequest, Step, Summary, VisualizationTrace, make_error_trace
 from visualizer.simulators.base import get_capacity
+from visualizer.simulators.stack_applications import simulate_stack_application
 
 
 def _state(data: list[Any], capacity: int) -> dict[str, Any]:
@@ -35,7 +36,9 @@ def _step(step_id: int, phase: str, title: str, description: str, data: list[Any
 def simulate_stack(request: OperationRequest) -> VisualizationTrace:
     if request.operation == "push":
         return simulate_push(request)
-    return simulate_pop(request)
+    if request.operation == "pop":
+        return simulate_pop(request)
+    return simulate_stack_application(request)
 
 
 def simulate_push(request: OperationRequest) -> VisualizationTrace:

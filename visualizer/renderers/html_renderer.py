@@ -30,6 +30,8 @@ def render_step_html(step: Step) -> str:
         body = _render_linked(step)
     elif kind == "stack":
         body = _render_stack(step)
+    elif kind == "stack_app":
+        body = _render_stack_app(step)
     elif kind == "queue":
         body = _render_queue(step)
     elif kind == "tree":
@@ -62,6 +64,13 @@ def render_styles() -> str:
     .dsvp-stack{display:flex;flex-direction:column-reverse;align-items:flex-start;gap:6px;min-height:52px}
     .dsvp-stack-item{width:130px;border-color:#22c55e}
     .dsvp-stack-top,.dsvp-queue-mark{font-size:12px;color:#475569;font-weight:800}
+    .dsvp-stack-board{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+    .dsvp-stack-col{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:118px}
+    .dsvp-stack-col .dsvp-stack{align-items:center;min-height:84px}
+    .dsvp-stack-label{font-size:12px;color:#334155;font-weight:800}
+    .dsvp-io{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .dsvp-token{display:inline-flex;min-width:32px;min-height:30px;align-items:center;justify-content:center;padding:4px 8px;border-radius:7px;border:1px solid #cbd5e1;background:white;color:#334155;font-weight:700}
+    .dsvp-token.output{border-color:#22c55e;background:#ecfdf5;color:#166534}
     .dsvp-queue-item{border-color:#f59e0b}
     .dsvp-meta{margin-top:10px;color:#475569;font-size:13px}
     .dsvp-empty{padding:18px;color:#64748b}
@@ -204,6 +213,54 @@ def _render_stack(step: Step) -> str:
         "<div class='dsvp-wrap'>"
         f"<div class='dsvp-stack'>{''.join(rendered)}</div>"
         f"<div class='dsvp-stack-top'>top={html.escape(str(state.get('top')))}</div>"
+        "</div>"
+    )
+
+
+def _render_stack_app(step: Step) -> str:
+    state = step.state
+    stacks = state.get("stacks", {})
+    stack_cols = []
+    for name, values in stacks.items():
+        rendered_items = []
+        for value in values:
+            rendered_items.append(
+                "<div class='dsvp-stack-item'>"
+                f"<span class='dsvp-value'>{html.escape(str(value))}</span>"
+                "</div>"
+            )
+        stack_cols.append(
+            "<div class='dsvp-stack-col'>"
+            f"<div class='dsvp-stack-label'>{html.escape(str(name))}</div>"
+            f"<div class='dsvp-stack'>{''.join(rendered_items)}</div>"
+            "</div>"
+        )
+
+    input_tokens = "".join(
+        f"<span class='dsvp-token'>{html.escape(str(item))}</span>"
+        for item in state.get("input", [])
+    )
+    output_tokens = "".join(
+        f"<span class='dsvp-token output'>{html.escape(str(item))}</span>"
+        for item in state.get("output", [])
+    )
+    io_parts = []
+    if input_tokens:
+        io_parts.append(f"<div class='dsvp-io'><strong>输入</strong>{input_tokens}</div>")
+    if output_tokens:
+        io_parts.append(f"<div class='dsvp-io'><strong>输出</strong>{output_tokens}</div>")
+    current = state.get("current")
+    current_html = ""
+    if current not in (None, ""):
+        current_html = f"<div class='dsvp-meta'>当前：{html.escape(str(current))}</div>"
+    note = state.get("note")
+    note_html = f"<div class='dsvp-meta'>{html.escape(str(note))}</div>" if note else ""
+    return (
+        "<div class='dsvp-wrap'>"
+        f"<div class='dsvp-stack-board'>{''.join(stack_cols)}</div>"
+        f"{''.join(io_parts)}"
+        f"{current_html}"
+        f"{note_html}"
         "</div>"
     )
 

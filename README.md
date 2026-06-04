@@ -25,9 +25,14 @@
 - 单链表查找
 - 单链表头插法 / 尾插法建表
 - 栈 push / pop
+- 栈经典应用：链栈 push / pop、进制转换、括号匹配、中缀转后缀、后缀表达式求值、前缀表达式求值、表达式求值、函数调用栈、递归调用、汉诺塔、迷宫回溯、非递归 DFS、二叉树非递归先序 / 中序 / 后序遍历、浏览器前进后退、撤销重做、标签匹配、语法分析栈、单调栈、下一个更大元素、柱状图最大矩形、每日温度、栈排序、两个栈实现队列、栈逆序、火车调度、出栈序列合法性判断
 - 队列 enqueue / dequeue
+- 二叉树先序 / 中序 / 后序 / 层序遍历
+- 图 build / DFS / BFS / Dijkstra
+- 顺序查找 / 折半查找
+- 冒泡 / 插入 / 选择 / 快速排序
 
-树、图、排序等内容暂不在第一阶段实现。
+如果问题超出当前模拟器范围，系统仍会给出文字讲解，并在右侧提示暂不支持可视化演示。
 
 ## 项目结构
 
@@ -236,10 +241,10 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 ### OperationRequest
 
-第一阶段支持：
+当前支持：
 
-- `structure`: `sequential_list`, `singly_linked_list`, `stack`, `queue`
-- `operation`: `insert`, `delete`, `search`, `build`, `push`, `pop`, `enqueue`, `dequeue`
+- `structure`: `sequential_list`, `singly_linked_list`, `stack`, `queue`, `binary_tree`, `graph`, `search_table`, `sort`
+- `operation`: `insert`, `delete`, `search`, `build`, `push`, `pop`, `enqueue`, `dequeue`，以及栈应用、树遍历、图遍历、查找、排序等模拟器操作
 
 示例：
 
@@ -272,7 +277,7 @@ Windows 可以安装 MinGW-w64，或使用带 gcc 的开发环境。
 
 模拟器输出统一的 `VisualizationTrace`，每一步包含：
 
-- `state.kind`: `sequence`, `linked`, `stack`, `queue`
+- `state.kind`: `sequence`, `linked`, `stack`, `stack_app`, `queue`, `tree`, `graph`
 - `actions`: `shift`, `link`, `unlink`, `compare`, `push`, `pop`, `enqueue`, `dequeue` 等
 - `highlights`: 节点、边、单元格、指针的高亮角色
 - `errors` / `warnings`: 统一错误和提示格式

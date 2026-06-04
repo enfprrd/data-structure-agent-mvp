@@ -9,7 +9,41 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 SUPPORTED_DEMO_PAIRS = {
     "sequential_list": {"insert", "delete", "search"},
     "singly_linked_list": {"insert", "delete", "search", "build"},
-    "stack": {"push", "pop"},
+    "stack": {
+        "push",
+        "pop",
+        "linked_push",
+        "linked_pop",
+        "base_conversion",
+        "bracket_matching",
+        "expression_bracket_check",
+        "infix_to_postfix",
+        "postfix_evaluation",
+        "prefix_evaluation",
+        "expression_evaluation",
+        "call_stack",
+        "recursion_trace",
+        "hanoi_recursive",
+        "hanoi_iterative",
+        "maze_backtracking",
+        "dfs_iterative",
+        "binary_tree_preorder_iterative",
+        "binary_tree_inorder_iterative",
+        "binary_tree_postorder_iterative",
+        "browser_history",
+        "undo_redo",
+        "tag_matching",
+        "syntax_parse_stack",
+        "monotonic_stack",
+        "next_greater_element",
+        "largest_rectangle",
+        "daily_temperatures",
+        "stack_sort",
+        "two_stacks_queue",
+        "reverse_stack",
+        "train_rearrangement",
+        "pop_sequence_validation",
+    },
     "queue": {"enqueue", "dequeue"},
     "binary_tree": {"traverse_preorder", "traverse_inorder", "traverse_postorder", "traverse_level_order"},
     "graph": {"build", "dfs", "bfs", "dijkstra"},
@@ -105,7 +139,7 @@ class OperationRequest(ProtocolModel):
             missing.append("params.value")
         if self.operation == "search" and self.params.target is None:
             missing.append("params.target")
-        if self.operation == "build" and not self.params.values:
+        if self.structure == "singly_linked_list" and self.operation == "build" and not self.params.values:
             missing.append("params.values")
         if self.structure == "search_table" and self.params.target is None:
             missing.append("params.target")

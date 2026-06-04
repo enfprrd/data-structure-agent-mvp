@@ -23,3 +23,25 @@ def test_pop() -> None:
 def test_empty_pop() -> None:
     trace = dispatch(req("pop", {}, []))
     assert trace.errors[0].code == "EMPTY_STACK_POP"
+
+
+def test_postfix_evaluation() -> None:
+    trace = dispatch(req("postfix_evaluation", {"values": ["3", "5", "2", "*", "+"]}, []))
+    assert trace.summary.result == "13"
+    assert trace.steps[-1].state["stacks"]["stack"] == [13]
+
+
+def test_bracket_matching() -> None:
+    trace = dispatch(req("bracket_matching", {"value": "([{}])"}, []))
+    assert trace.summary.result == "匹配成功"
+    assert trace.steps[-1].state["stacks"]["stack"] == []
+
+
+def test_hanoi_recursive() -> None:
+    trace = dispatch(req("hanoi_recursive", {"value": 3}, []))
+    assert trace.steps[-1].state["stacks"]["C"] == [3, 2, 1]
+
+
+def test_next_greater_element() -> None:
+    trace = dispatch(req("next_greater_element", {}, [2, 1, 2, 4, 3]))
+    assert trace.summary.result == "[4, 2, 4, -1, -1]"

@@ -21,6 +21,7 @@ COURSE_OPERATION_VOCABULARY = """
 如果用户要演示的内容不在上面，不要硬塞成已支持的 operation。请仍然输出合法 OperationRequest，并使用下面课程词表中最贴切的 structure/operation；前台会告知“JSON 合法，但本地暂不支持该演示”。
 
 课程词表：
+- stack: push, pop, linked_push, linked_pop, base_conversion, bracket_matching, expression_bracket_check, infix_to_postfix, postfix_evaluation, prefix_evaluation, expression_evaluation, call_stack, recursion_trace, hanoi_recursive, hanoi_iterative, maze_backtracking, dfs_iterative, binary_tree_preorder_iterative, binary_tree_inorder_iterative, binary_tree_postorder_iterative, browser_history, undo_redo, tag_matching, syntax_parse_stack, monotonic_stack, next_greater_element, largest_rectangle, daily_temperatures, stack_sort, two_stacks_queue, reverse_stack, train_rearrangement, pop_sequence_validation
 - string: naive_match, kmp_match
 - array: address_mapping, matrix_transpose, sparse_matrix_transpose
 - generalized_list: head_tail, depth, length
@@ -84,6 +85,7 @@ PARSER_SYSTEM_PROMPT = f"""
 - sequential_list insert/delete/search：insert/delete 必须有 params.position；insert 必须有 params.value；search 必须有 params.target。
 - singly_linked_list insert/delete/search/build：insert/delete 必须有 params.position；insert 必须有 params.value；search 必须有 params.target；build 必须有 params.values，mode 用 head_insert 或 tail_insert。
 - stack push/pop：push 必须有 params.value。
+- stack 的经典应用：优先使用上面 stack 词表里的 operation；表达式类可把 token 放到 params.values；汉诺塔可把盘子数放到 params.value；括号/标签可把字符串放到 params.value；出栈序列、火车调度目标序列可放到 params.values。
 - queue enqueue/dequeue：enqueue 必须有 params.value。
 
 头插/尾插建表示例：
