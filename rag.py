@@ -6,6 +6,29 @@ from pathlib import Path
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]")
+SPACE_PATTERN = re.compile(r"\s+")
+STOP_TOKENS = {
+    "的",
+    "了",
+    "和",
+    "与",
+    "是",
+    "在",
+    "有",
+    "把",
+    "这",
+    "那",
+    "个",
+    "一",
+    "二",
+    "三",
+    "么",
+    "什",
+    "怎",
+    "吗",
+    "呢",
+    "啊",
+}
 DOMAIN_TERMS = [
     "数据结构",
     "抽象数据类型",
@@ -14,6 +37,7 @@ DOMAIN_TERMS = [
     "空间复杂度",
     "线性表",
     "顺序表",
+    "顺序表与链表",
     "链表",
     "单链表",
     "循环链表",
@@ -89,6 +113,7 @@ DOMAIN_TERMS = [
     "归并排序",
     "基数排序",
     "外部排序",
+    "外排",
     "多路归并",
     "败者树",
     "置换选择",
@@ -127,11 +152,24 @@ class MarkdownKeywordRetriever:
 
     def _split_markdown(self, text: str) -> list[str]:
         chunks = re.split(r"\n(?=##\s+)", text)
-        normalized = [chunk.strip() for chunk in chunks if chunk.strip()]
+        title_match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+        document_title = title_match.group(0) if title_match else ""
+        normalized: list[str] = []
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if document_title and chunk.startswith("##"):
+                chunk = f"{document_title}\n\n{chunk}"
+            normalized.append(chunk)
         return normalized
 
     def _tokenize(self, text: str) -> list[str]:
-        return [token.lower() for token in TOKEN_PATTERN.findall(text)]
+        return [
+            token.lower()
+            for token in TOKEN_PATTERN.findall(text)
+            if token.lower() not in STOP_TOKENS
+        ]
 
     def _score(self, query: str, query_counter: Counter[str], chunk: str) -> int:
         chunk_tokens = Counter(self._tokenize(chunk))
@@ -143,16 +181,49 @@ class MarkdownKeywordRetriever:
 
         query_lower = query.lower()
         chunk_lower = chunk.lower()
-        for term in DOMAIN_TERMS:
+        query_compact = self._compact_for_phrase_match(query_lower)
+        chunk_compact = self._compact_for_phrase_match(chunk_lower)
+        matched_terms: list[str] = []
+        for term in self._active_domain_terms(query_compact):
             term_lower = term.lower()
-            if term_lower in query_lower and term_lower in chunk_lower:
+            term_compact = self._compact_for_phrase_match(term_lower)
+            if term_compact in query_compact and term_compact in chunk_compact:
+                matched_terms.append(term_lower)
                 score += len(term) * 8
 
         headings = re.findall(r"^#{1,6}\s+(.+)$", chunk, flags=re.MULTILINE)
         for heading in headings:
             heading_lower = heading.lower()
-            for term in DOMAIN_TERMS:
+            heading_compact = self._compact_for_phrase_match(heading_lower)
+            for term in self._active_domain_terms(query_compact):
                 term_lower = term.lower()
-                if term_lower in query_lower and term_lower in heading_lower:
+                term_compact = self._compact_for_phrase_match(term_lower)
+                if term_compact in query_compact and term_compact in heading_compact:
                     score += len(term) * 12
+
+        if matched_terms and headings:
+            first_heading = self._compact_for_phrase_match(headings[0].lower())
+            if any(self._compact_for_phrase_match(term) in first_heading for term in matched_terms):
+                score += 30
         return score
+
+    def _compact_for_phrase_match(self, text: str) -> str:
+        return SPACE_PATTERN.sub("", text).replace("和", "与")
+
+    def _active_domain_terms(self, query_compact: str) -> list[str]:
+        matched = [
+            term
+            for term in DOMAIN_TERMS
+            if self._compact_for_phrase_match(term.lower()) in query_compact
+        ]
+        active: list[str] = []
+        for term in matched:
+            term_compact = self._compact_for_phrase_match(term.lower())
+            if len(term_compact) == 1 and any(
+                len(other_compact := self._compact_for_phrase_match(other.lower())) > 1
+                and term_compact in other_compact
+                for other in matched
+            ):
+                continue
+            active.append(term)
+        return active

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -21,8 +22,29 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
-APP_VERSION = "test-2026-06-03-02"
 GENERATION_STALE_SECONDS = 45
+VERSION_FILE_PATTERNS = [
+    "*.py",
+    "*.md",
+    "*.txt",
+    "knowledge/*.md",
+    "prompts/*.txt",
+    "visualizer/**/*.py",
+]
+
+
+def build_app_version() -> str:
+    latest_mtime = Path(__file__).stat().st_mtime
+    for pattern in VERSION_FILE_PATTERNS:
+        for path in BASE_DIR.glob(pattern):
+            if path.is_file():
+                latest_mtime = max(latest_mtime, path.stat().st_mtime)
+
+    modified_at = datetime.fromtimestamp(latest_mtime)
+    return f"dev-{modified_at:%Y%m%d-%H%M}"
+
+
+APP_VERSION = build_app_version()
 
 
 def load_system_prompt() -> str:
@@ -402,24 +424,14 @@ def main() -> None:
                     st.markdown("翻教材中...")
 
         question = st.chat_input("问一个数据结构课问题")
-    if question and not st.session_state.is_generating and not st.session_state.pending_question:
+    if question and not st.session_state.pending_question:
         retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
-        conversation_context = build_conversation_context(st.session_state.messages)
-        retrieval_query = f"{question}\n此前完整对话上下文：{conversation_context}" if conversation_context else question
-        contexts = retriever.retrieve(retrieval_query, top_k=3)
+        contexts = retriever.retrieve(question, top_k=3)
         st.session_state.last_contexts = contexts
         st.session_state.messages.append({"role": "user", "content": question})
         st.session_state.pending_question = question
         st.session_state.pending_contexts = contexts
         st.rerun()
-
-    if st.session_state.pending_question and st.session_state.is_generating:
-        elapsed = time.time() - float(st.session_state.get("generation_started_at", 0.0) or 0.0)
-        if elapsed > GENERATION_STALE_SECONDS:
-            st.session_state.is_generating = False
-            st.session_state.generation_started_at = 0.0
-        else:
-            return
 
     if not st.session_state.pending_question:
         return
