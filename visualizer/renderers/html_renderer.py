@@ -123,6 +123,20 @@ def render_styles() -> str:
     @keyframes dsvp-success{0%,100%{filter:none}50%{filter:brightness(1.08)}}
     @keyframes dsvp-path{0%{transform:translateX(-4px);opacity:.45}100%{transform:translateX(0);opacity:1}}
     @media (min-width:900px){.dsvp-companion{grid-template-columns:1fr 1fr}.dsvp-panel.wide{grid-column:1 / -1}}
+    @media (max-width:600px){
+        .dsvp-wrap{padding:12px}
+        .dsvp-cell,.dsvp-node,.dsvp-head,.dsvp-stack-item,.dsvp-queue-item{min-width:52px;min-height:52px;padding:6px 8px}
+        .dsvp-stack-item{width:104px}
+        .dsvp-stack-board{gap:10px;align-items:flex-start}
+        .dsvp-stack-col{min-width:92px}
+        .dsvp-token{min-width:28px;min-height:28px;padding:3px 7px}
+        .dsvp-tree{justify-content:flex-start;min-width:260px}
+        .dsvp-tree-node,.dsvp-tree-empty{width:48px;min-width:48px;min-height:48px}
+        .dsvp-tree-children{gap:12px}
+        .dsvp-graph-node{min-width:46px;min-height:46px;padding:6px 8px}
+        .dsvp-panel{padding:8px 10px}
+        .dsvp-code-line{font-size:11px}
+    }
     </style>
     """
 

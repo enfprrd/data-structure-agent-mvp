@@ -270,19 +270,32 @@ def main() -> None:
         """
         <style>
         html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
-            height: 100vh;
+            height: 100dvh;
             overflow: hidden;
         }
         [data-testid="stMainBlockContainer"] {
-            max-width: 1440px;
-            padding-top: 1.5rem;
-            padding-bottom: 1rem;
-            height: 100vh;
+            max-width: 1680px;
+            padding-top: clamp(0.75rem, 1.6vh, 1.5rem);
+            padding-bottom: 0.75rem;
+            height: 100dvh;
             overflow: hidden;
         }
-        [data-testid="column"]:nth-of-type(2) > div {
-            height: calc(100vh - 8.5rem);
-            overflow: auto;
+        .st-key-demo_panel {
+            height: calc(100dvh - 9.25rem);
+            min-height: 360px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
+            padding-right: 0.35rem;
+        }
+        .st-key-demo_panel [data-testid="stVerticalBlock"] {
+            gap: 0.55rem;
+        }
+        .st-key-chat_scroll {
+            height: min(560px, calc(100dvh - 18rem)) !important;
+            min-height: 300px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
         }
         .stChatMessage {
             border: 1px solid #e5e7eb;
@@ -292,6 +305,27 @@ def main() -> None:
         }
         section[data-testid="stChatInput"] {
             position: static;
+        }
+        @media (max-height: 820px) and (min-width: 901px) {
+            [data-testid="stMainBlockContainer"] {
+                padding-top: 0.65rem;
+            }
+            h1 {
+                font-size: 2.15rem !important;
+                margin-bottom: 0.35rem !important;
+            }
+            h3 {
+                margin-top: 0.45rem !important;
+                margin-bottom: 0.45rem !important;
+            }
+            .st-key-demo_panel {
+                height: calc(100dvh - 7.75rem);
+                min-height: 300px;
+            }
+            .st-key-chat_scroll {
+                height: calc(100dvh - 15.75rem) !important;
+                min-height: 260px;
+            }
         }
         @media (max-width: 900px) {
             html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
@@ -305,18 +339,21 @@ def main() -> None:
                 overflow: visible;
                 padding: 1rem 0.75rem 1rem;
             }
-            [data-testid="column"]:nth-of-type(2) > div {
-                height: auto;
-                max-height: none;
-                overflow: visible;
-            }
             .st-key-chat_scroll {
-                max-height: 52vh;
+                height: 45dvh !important;
+                min-height: 260px;
+                max-height: 520px;
                 overflow-y: auto;
+                overscroll-behavior: contain;
             }
             .st-key-demo_panel {
-                max-height: none;
-                overflow: visible;
+                height: 58dvh;
+                min-height: 320px;
+                max-height: 620px;
+                overflow-y: auto;
+                overflow-x: hidden;
+                overscroll-behavior: contain;
+                border-bottom: 1px solid #e5e7eb;
             }
             h1 {
                 font-size: 1.6rem !important;
