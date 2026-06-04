@@ -25,7 +25,17 @@ def _edges(data: list[Any]) -> list[dict[str, str]]:
 
 
 def _state(data: list[Any]) -> dict[str, Any]:
-    return {"kind": "tree", "nodes": _nodes(data), "edges": _edges(data)}
+    slots = [
+        {
+            "id": f"t{index}",
+            "label": "null" if value is None else str(value),
+            "value": value,
+            "index": index,
+            "empty": value is None,
+        }
+        for index, value in enumerate(data)
+    ]
+    return {"kind": "tree", "nodes": _nodes(data), "slots": slots, "edges": _edges(data)}
 
 
 def _step(step_id: int, title: str, description: str, data: list[Any], index: int | None, role: str, order: list[Any]) -> Step:

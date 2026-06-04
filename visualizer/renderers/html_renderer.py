@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import re
 from typing import Any
 
@@ -92,6 +93,19 @@ def render_styles() -> str:
     .dsvp-pointer-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid #cbd5e1;border-radius:999px;background:white;color:#334155;font-size:12px;font-weight:700}
     .dsvp-pointer-chip.active{border-color:#2563eb;background:#eff6ff;color:#1d4ed8}
     .dsvp-tree{display:flex;justify-content:center;min-width:340px;overflow:auto;padding:4px 0 2px}
+    .dsvp-svg{display:block;max-width:none}
+    .dsvp-svg-node{fill:#fff;stroke:#60a5fa;stroke-width:2}
+    .dsvp-svg-node.empty{fill:#f8fafc;stroke:#cbd5e1;stroke-dasharray:4 4}
+    .dsvp-svg-node.current,.dsvp-svg-node.target{fill:#fff7ed;stroke:#fb923c}
+    .dsvp-svg-node.success{fill:#ecfdf5;stroke:#16a34a}
+    .dsvp-svg-node.new{fill:#ecfdf5;stroke:#22c55e}
+    .dsvp-svg-node.changed,.dsvp-svg-node.moved{fill:#fefce8;stroke:#eab308}
+    .dsvp-svg-node.visited{fill:#eff6ff;stroke:#60a5fa}
+    .dsvp-svg-text{font-size:13px;font-weight:800;fill:#111827;text-anchor:middle;dominant-baseline:central}
+    .dsvp-svg-text.empty{font-size:11px;font-weight:700;fill:#94a3b8}
+    .dsvp-svg-edge{stroke:#94a3b8;stroke-width:2;fill:none}
+    .dsvp-svg-edge.active{stroke:#2563eb;stroke-width:3}
+    .dsvp-svg-edge-label{font-size:11px;font-weight:700;fill:#475569;text-anchor:middle;paint-order:stroke;stroke:#f8fafc;stroke-width:4px}
     .dsvp-tree-subtree{display:flex;flex-direction:column;align-items:center;position:relative}
     .dsvp-tree-children{display:flex;justify-content:center;gap:22px;position:relative;margin-top:24px}
     .dsvp-tree-children::before{content:"";position:absolute;left:28px;right:28px;top:-12px;border-top:2px solid #93c5fd}
@@ -303,10 +317,9 @@ def _render_queue(step: Step) -> str:
 def _render_tree(step: Step) -> str:
     state = step.state
     node_roles = {item.id: item.role for item in step.highlights.nodes}
-    nodes = state.get("nodes", [])
-    by_index = {int(node.get("index", 0)): node for node in nodes}
+    slots = state.get("slots") or state.get("nodes", [])
     order = " -> ".join(str(item) for item in state.get("visit_order", []))
-    tree_html = _render_tree_subtree(0, by_index, node_roles)
+    tree_html = _render_tree_svg(slots, state.get("edges", []), node_roles)
     return (
         "<div class='dsvp-wrap'>"
         f"<div class='dsvp-tree'>{tree_html}</div>"
@@ -318,29 +331,12 @@ def _render_tree(step: Step) -> str:
 def _render_graph(step: Step) -> str:
     state = step.state
     node_roles = {item.id: item.role for item in step.highlights.nodes}
-    node_html = []
-    for node in state.get("nodes", []):
-        node_id = str(node)
-        role = node_roles.get(node_id)
-        classes = ["dsvp-graph-node"]
-        if role:
-            classes.append(_role_class(role))
-        node_html.append(
-            f"<div class='{' '.join(classes)}'>{_marker_row(_badge(role) if role else '')}<span class='dsvp-value'>{html.escape(node_id)}</span></div>"
-        )
-    edge_html = []
-    for edge in state.get("edges", []):
-        src = html.escape(str(edge.get("from")))
-        dst = html.escape(str(edge.get("to")))
-        weight = edge.get("weight")
-        label = f"{src} -> {dst}" + (f" ({html.escape(str(weight))})" if weight not in (None, 1) else "")
-        edge_html.append(f"<span class='dsvp-edge-chip'>{label}</span>")
     order = " -> ".join(str(item) for item in state.get("visit_order", []))
+    graph_html = _render_graph_svg(state.get("nodes", []), state.get("edges", []), node_roles)
     return (
         "<div class='dsvp-wrap'>"
         "<div class='dsvp-graph'>"
-        f"<div class='dsvp-graph-nodes'>{''.join(node_html)}</div>"
-        f"<div class='dsvp-graph-edges'>{''.join(edge_html)}</div>"
+        f"{graph_html}"
         "</div>"
         f"<div class='dsvp-meta'>轨迹：{html.escape(order or '暂无')}</div>"
         "</div>"
@@ -424,6 +420,154 @@ def _render_node_box(
         f"<span class='dsvp-value'>{html.escape(label)}</span>"
         "</div>"
     )
+
+
+def _render_tree_svg(slots: list[dict[str, Any]], edges: list[dict[str, Any]], node_roles: dict[str, str]) -> str:
+    if not slots:
+        return "<div class='dsvp-empty'>空树</div>"
+
+    max_index = max(int(node.get("index", 0)) for node in slots)
+    max_level = _tree_level(max_index)
+    x_gap = 64
+    y_gap = 82
+    radius = 22
+    width = max(340, (2 ** max_level) * x_gap)
+    height = (max_level + 1) * y_gap + 34
+    positions: dict[str, tuple[float, float]] = {}
+    slot_by_id: dict[str, dict[str, Any]] = {}
+
+    for slot in slots:
+        index = int(slot.get("index", 0))
+        level = _tree_level(index)
+        first = 2**level - 1
+        offset = index - first
+        local_gap = width / (2**level + 1)
+        x = local_gap * (offset + 1)
+        y = 36 + level * y_gap
+        node_id = str(slot.get("id", f"t{index}"))
+        positions[node_id] = (x, y)
+        slot_by_id[node_id] = slot
+
+    edge_parts = []
+    for edge in edges:
+        src = str(edge.get("from"))
+        dst = str(edge.get("to"))
+        if src not in positions or dst not in positions:
+            continue
+        x1, y1 = positions[src]
+        x2, y2 = positions[dst]
+        line = _shortened_line(x1, y1, x2, y2, radius)
+        edge_parts.append(
+            f"<line class='dsvp-svg-edge' x1='{line[0]:.1f}' y1='{line[1]:.1f}' x2='{line[2]:.1f}' y2='{line[3]:.1f}' />"
+        )
+        label = edge.get("label")
+        if label:
+            edge_parts.append(
+                f"<text class='dsvp-svg-edge-label' x='{(x1 + x2) / 2:.1f}' y='{(y1 + y2) / 2 - 4:.1f}'>{html.escape(str(label))}</text>"
+            )
+
+    node_parts = []
+    for node_id, (x, y) in positions.items():
+        slot = slot_by_id[node_id]
+        empty = bool(slot.get("empty"))
+        role = node_roles.get(node_id)
+        classes = ["dsvp-svg-node"]
+        if empty:
+            classes.append("empty")
+        if role:
+            classes.append(str(role))
+        text_classes = ["dsvp-svg-text"]
+        if empty:
+            text_classes.append("empty")
+        node_parts.append(
+            f"<circle class='{' '.join(classes)}' cx='{x:.1f}' cy='{y:.1f}' r='{radius}' />"
+            f"<text class='{' '.join(text_classes)}' x='{x:.1f}' y='{y:.1f}'>{html.escape(str(slot.get('label', '')))}</text>"
+        )
+
+    return (
+        f"<svg class='dsvp-svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}' role='img'>"
+        f"{''.join(edge_parts)}{''.join(node_parts)}"
+        "</svg>"
+    )
+
+
+def _render_graph_svg(nodes: list[Any], edges: list[dict[str, Any]], node_roles: dict[str, str]) -> str:
+    node_ids = [str(node) for node in nodes]
+    if not node_ids:
+        return "<div class='dsvp-empty'>空图</div>"
+
+    width = 520
+    height = 340
+    cx = width / 2
+    cy = height / 2
+    radius = 118 if len(node_ids) > 2 else 86
+    node_radius = 24
+    positions: dict[str, tuple[float, float]] = {}
+
+    if len(node_ids) == 1:
+        positions[node_ids[0]] = (cx, cy)
+    else:
+        for index, node_id in enumerate(node_ids):
+            angle = -1.5708 + 2 * 3.14159 * index / len(node_ids)
+            positions[node_id] = (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+
+    edge_parts = [
+        "<defs><marker id='dsvp-arrow' markerWidth='10' markerHeight='10' refX='8' refY='3' orient='auto' markerUnits='strokeWidth'><path d='M0,0 L0,6 L9,3 z' fill='#94a3b8' /></marker></defs>"
+    ]
+    for edge in edges:
+        src = str(edge.get("from"))
+        dst = str(edge.get("to"))
+        if src not in positions or dst not in positions:
+            continue
+        x1, y1 = positions[src]
+        x2, y2 = positions[dst]
+        if src == dst:
+            edge_parts.append(
+                f"<path class='dsvp-svg-edge' d='M{x1:.1f},{y1 - node_radius:.1f} C{x1 + 52:.1f},{y1 - 72:.1f} {x1 + 72:.1f},{y1 + 12:.1f} {x1 + node_radius:.1f},{y1:.1f}' marker-end='url(#dsvp-arrow)' />"
+            )
+            continue
+        line = _shortened_line(x1, y1, x2, y2, node_radius + 2)
+        edge_parts.append(
+            f"<line class='dsvp-svg-edge' x1='{line[0]:.1f}' y1='{line[1]:.1f}' x2='{line[2]:.1f}' y2='{line[3]:.1f}' marker-end='url(#dsvp-arrow)' />"
+        )
+        weight = edge.get("weight")
+        if weight not in (None, 1, "1"):
+            edge_parts.append(
+                f"<text class='dsvp-svg-edge-label' x='{(x1 + x2) / 2:.1f}' y='{(y1 + y2) / 2 - 5:.1f}'>{html.escape(str(weight))}</text>"
+            )
+
+    node_parts = []
+    for node_id in node_ids:
+        x, y = positions[node_id]
+        role = node_roles.get(node_id)
+        classes = ["dsvp-svg-node"]
+        if role:
+            classes.append(str(role))
+        node_parts.append(
+            f"<circle class='{' '.join(classes)}' cx='{x:.1f}' cy='{y:.1f}' r='{node_radius}' />"
+            f"<text class='dsvp-svg-text' x='{x:.1f}' y='{y:.1f}'>{html.escape(node_id)}</text>"
+        )
+
+    return (
+        f"<svg class='dsvp-svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}' role='img'>"
+        f"{''.join(edge_parts)}{''.join(node_parts)}"
+        "</svg>"
+    )
+
+
+def _tree_level(index: int) -> int:
+    return (index + 1).bit_length() - 1
+
+
+def _shortened_line(x1: float, y1: float, x2: float, y2: float, offset: float) -> tuple[float, float, float, float]:
+    dx = x2 - x1
+    dy = y2 - y1
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return x1, y1, x2, y2
+    ux = dx / length
+    uy = dy / length
+    return x1 + ux * offset, y1 + uy * offset, x2 - ux * offset, y2 - uy * offset
 
 
 def _role_class(role: str) -> str:
