@@ -22,7 +22,10 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
-FOLLOW_UP_DEMO_PATTERN = re.compile(r"^(演示|展示|继续|来|讲|看|跑|播放|可视化).{0,12}(一下|下|呗|吧|看看|演示)?[。！!？?~～]*$")
+DEMO_WORD_PATTERN = re.compile(r"演示|展示|继续|播放|可视化|跑一下|看一下|讲一下|试一下")
+COURSE_TOPIC_PATTERN = re.compile(
+    r"线性表|顺序表|链表|栈|队列|串|KMP|数组|广义表|矩阵|树|二叉树|图|DFS|BFS|查找|排序|归并|快速|冒泡|插入排序|选择排序|堆排序|希尔|基数|哈夫曼|Dijkstra|Floyd|Prim|Kruskal|散列|哈希"
+)
 GENERATION_STALE_SECONDS = 45
 VERSION_FILE_PATTERNS = [
     "*.py",
@@ -115,22 +118,33 @@ def build_chat_history_messages(messages: list[dict[str, object]]) -> list[dict[
     return history
 
 
-def build_effective_question(question: str, messages: list[dict[str, object]]) -> str:
+def build_effective_question(
+    question: str,
+    messages: list[dict[str, object]],
+    client: DeepSeekClient | None = None,
+) -> str:
     current = question.strip()
-    if not _is_follow_up_demo_question(current):
+    if not _is_ambiguous_follow_up(current):
         return current
 
     previous_topic = _last_user_topic(messages)
     if not previous_topic:
         return current
-    return f"{_demo_topic_query(previous_topic)}\n追问：{current}"
+
+    rewritten = _rewrite_follow_up_with_deepseek(current, messages, client)
+    if rewritten:
+        return rewritten
+
+    return f"{previous_topic}\n追问：{current}"
 
 
-def _is_follow_up_demo_question(question: str) -> bool:
+def _is_ambiguous_follow_up(question: str) -> bool:
     compact = re.sub(r"\s+", "", question)
-    if FOLLOW_UP_DEMO_PATTERN.fullmatch(compact):
+    if not compact:
+        return False
+    if len(compact) <= 14 and DEMO_WORD_PATTERN.search(compact):
         return True
-    return compact in {"演示一下", "演示一下呗", "展示一下", "继续演示", "可视化一下"}
+    return compact in {"这个呢", "那这个呢", "继续", "继续讲", "继续说", "详细点", "展开讲"}
 
 
 def _last_user_topic(messages: list[dict[str, object]]) -> str:
@@ -138,17 +152,47 @@ def _last_user_topic(messages: list[dict[str, object]]) -> str:
         if str(message.get("role")) != "user":
             continue
         content = str(message.get("content", "")).strip()
-        if content and not _is_follow_up_demo_question(content):
+        if content and not _is_ambiguous_follow_up(content):
             return content
     return ""
 
 
-def _demo_topic_query(topic: str) -> str:
-    compact = re.sub(r"(的)?(时间|空间)?复杂度(是多少|如何分析|怎么分析)?", "", topic)
-    compact = compact.replace("时间空间", "").replace("时间和空间", "")
-    if "归并算法" in compact and "归并排序" not in compact:
-        compact += " 归并排序"
-    return f"{compact} 演示 排序过程 操作步骤"
+def _rewrite_follow_up_with_deepseek(
+    question: str,
+    messages: list[dict[str, object]],
+    client: DeepSeekClient | None,
+) -> str:
+    if client is None:
+        return ""
+
+    history = build_conversation_context(messages[-6:])
+    prompt = (
+        "你只负责把用户的省略追问改写成一个独立、明确的数据结构课程问题，用于知识库检索。\n"
+        "要求：\n"
+        "- 只输出改写后的问题，不要解释。\n"
+        "- 如果用户说“演示一下/继续演示/展示一下”，必须继承最近一轮具体主题。\n"
+        "- 保留算法或数据结构名称，例如归并排序、二叉树、Dijkstra。\n"
+        "- 不要擅自改成链表、顺序表等无关主题。\n"
+        "- 如果无法判断，就原样输出用户新问题。\n\n"
+        f"最近对话：\n{history or '暂无'}\n\n"
+        f"用户新问题：{question}"
+    )
+    try:
+        rewritten = client.chat(
+            [
+                {"role": "system", "content": "你是数据结构问答的检索问题改写器。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=120,
+        ).strip()
+    except DeepSeekError:
+        return ""
+
+    rewritten = re.sub(r"^```(?:text)?|```$", "", rewritten).strip()
+    if not rewritten or len(rewritten) > 120:
+        return ""
+    return rewritten
 
 
 def render_contexts(contexts: list[dict[str, str]]) -> None:
@@ -505,7 +549,13 @@ def main() -> None:
         question = st.chat_input("问一个数据结构课问题")
     if question and not st.session_state.pending_question:
         retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
-        effective_question = build_effective_question(question, st.session_state.messages)
+        rewrite_client = None
+        if _is_ambiguous_follow_up(question):
+            try:
+                rewrite_client = DeepSeekClient(timeout=20)
+            except DeepSeekError:
+                rewrite_client = None
+        effective_question = build_effective_question(question, st.session_state.messages, rewrite_client)
         contexts = retriever.retrieve(effective_question, top_k=3)
         st.session_state.last_contexts = contexts
         st.session_state.messages.append({"role": "user", "content": question})
