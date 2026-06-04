@@ -22,6 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
+FOLLOW_UP_DEMO_PATTERN = re.compile(r"^(演示|展示|继续|来|讲|看|跑|播放|可视化).{0,12}(一下|下|呗|吧|看看|演示)?[。！!？?~～]*$")
 GENERATION_STALE_SECONDS = 45
 VERSION_FILE_PATTERNS = [
     "*.py",
@@ -114,6 +115,42 @@ def build_chat_history_messages(messages: list[dict[str, object]]) -> list[dict[
     return history
 
 
+def build_effective_question(question: str, messages: list[dict[str, object]]) -> str:
+    current = question.strip()
+    if not _is_follow_up_demo_question(current):
+        return current
+
+    previous_topic = _last_user_topic(messages)
+    if not previous_topic:
+        return current
+    return f"{_demo_topic_query(previous_topic)}\n追问：{current}"
+
+
+def _is_follow_up_demo_question(question: str) -> bool:
+    compact = re.sub(r"\s+", "", question)
+    if FOLLOW_UP_DEMO_PATTERN.fullmatch(compact):
+        return True
+    return compact in {"演示一下", "演示一下呗", "展示一下", "继续演示", "可视化一下"}
+
+
+def _last_user_topic(messages: list[dict[str, object]]) -> str:
+    for message in reversed(messages):
+        if str(message.get("role")) != "user":
+            continue
+        content = str(message.get("content", "")).strip()
+        if content and not _is_follow_up_demo_question(content):
+            return content
+    return ""
+
+
+def _demo_topic_query(topic: str) -> str:
+    compact = re.sub(r"(的)?(时间|空间)?复杂度(是多少|如何分析|怎么分析)?", "", topic)
+    compact = compact.replace("时间空间", "").replace("时间和空间", "")
+    if "归并算法" in compact and "归并排序" not in compact:
+        compact += " 归并排序"
+    return f"{compact} 演示 排序过程 操作步骤"
+
+
 def render_contexts(contexts: list[dict[str, str]]) -> None:
     with st.expander("本次检索到的知识库片段", expanded=False):
         if not contexts:
@@ -177,6 +214,7 @@ def make_teaching_view(answer: str, show_code: bool) -> tuple[str, list[str]]:
 
 def finish_generation() -> None:
     st.session_state.pending_question = ""
+    st.session_state.pending_effective_question = ""
     st.session_state.pending_contexts = []
     st.session_state.is_generating = False
     st.session_state.generation_started_at = 0.0
@@ -399,6 +437,9 @@ def main() -> None:
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = ""
 
+    if "pending_effective_question" not in st.session_state:
+        st.session_state.pending_effective_question = ""
+
     if "pending_contexts" not in st.session_state:
         st.session_state.pending_contexts = []
 
@@ -426,6 +467,7 @@ def main() -> None:
             st.session_state.messages = []
             st.session_state.last_contexts = []
             st.session_state.pending_question = ""
+            st.session_state.pending_effective_question = ""
             st.session_state.pending_contexts = []
             st.session_state.is_generating = False
             st.session_state.generation_started_at = 0.0
@@ -463,10 +505,12 @@ def main() -> None:
         question = st.chat_input("问一个数据结构课问题")
     if question and not st.session_state.pending_question:
         retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
-        contexts = retriever.retrieve(question, top_k=3)
+        effective_question = build_effective_question(question, st.session_state.messages)
+        contexts = retriever.retrieve(effective_question, top_k=3)
         st.session_state.last_contexts = contexts
         st.session_state.messages.append({"role": "user", "content": question})
         st.session_state.pending_question = question
+        st.session_state.pending_effective_question = effective_question
         st.session_state.pending_contexts = contexts
         st.rerun()
 
@@ -476,6 +520,7 @@ def main() -> None:
     st.session_state.is_generating = True
     st.session_state.generation_started_at = time.time()
     question = st.session_state.pending_question
+    effective_question = st.session_state.get("pending_effective_question") or question
     contexts = st.session_state.pending_contexts
     prior_messages = st.session_state.messages[:-1]
     conversation_context = build_conversation_context(prior_messages)
@@ -502,7 +547,7 @@ def main() -> None:
         {
             "role": "user",
             "content": build_user_prompt(
-                question,
+                effective_question,
                 contexts,
             ),
         },

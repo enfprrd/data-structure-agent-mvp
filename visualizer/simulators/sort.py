@@ -44,6 +44,8 @@ def simulate_sort(request: OperationRequest) -> VisualizationTrace:
         return _selection(request)
     if request.operation == "quick_sort":
         return _quick(request)
+    if request.operation == "merge_sort":
+        return _merge(request)
     return _bubble(request)
 
 
@@ -136,6 +138,53 @@ def _quick(request: OperationRequest) -> VisualizationTrace:
 
     quick(0, len(current) - 1)
     return _trace(request, "快速排序演示", data, current, "平均 O(n log n)，最坏 O(n^2)", "平均 O(log n)", steps)
+
+
+def _merge(request: OperationRequest) -> VisualizationTrace:
+    data = _values(request)
+    current = list(data)
+    aux = list(current)
+    steps = [_step(1, "init", "初始序列", f"准备对 {_text(current)} 做二路归并排序。", current)]
+
+    def merge_sort(left: int, right: int) -> None:
+        if left >= right:
+            steps.append(_step(len(steps) + 1, "check", "子序列已有序", f"A[{left + 1}..{right + 1}] 只有一个元素，天然有序。", current, left, "success", "check_condition"))
+            return
+
+        mid = (left + right) // 2
+        steps.append(_step(len(steps) + 1, "current", "二分子序列", f"把 A[{left + 1}..{right + 1}] 分成 A[{left + 1}..{mid + 1}] 和 A[{mid + 2}..{right + 1}]。", current, mid, "target"))
+        merge_sort(left, mid)
+        merge_sort(mid + 1, right)
+        merge(left, mid, right)
+
+    def merge(left: int, mid: int, right: int) -> None:
+        steps.append(_step(len(steps) + 1, "compare", "开始归并", f"归并两个有序段 A[{left + 1}..{mid + 1}] 和 A[{mid + 2}..{right + 1}]。", current, left, "current"))
+        i, j, k = left, mid + 1, left
+        while i <= mid and j <= right:
+            steps.append(_step(len(steps) + 1, "compare", "比较两段首元素", f"比较左段 {current[i]} 与右段 {current[j]}。", current, i, "target"))
+            if current[i] <= current[j]:
+                aux[k] = current[i]
+                i += 1
+            else:
+                aux[k] = current[j]
+                j += 1
+            k += 1
+        while i <= mid:
+            aux[k] = current[i]
+            i += 1
+            k += 1
+        while j <= right:
+            aux[k] = current[j]
+            j += 1
+            k += 1
+        for index in range(left, right + 1):
+            current[index] = aux[index]
+            steps.append(_step(len(steps) + 1, "assign", "写回原数组", f"把辅助数组中的 {aux[index]} 写回 A[{index + 1}]，当前序列 {_text(current)}。", current, index, "changed", "assign"))
+
+    if current:
+        merge_sort(0, len(current) - 1)
+    steps.append(_step(len(steps) + 1, "done", "排序完成", f"最终有序序列为 {_text(current)}。", current, None, "success"))
+    return _trace(request, "归并排序演示", data, current, "O(n log n)", "O(n)", steps)
 
 
 def _trace(request: OperationRequest, title: str, initial: list[Any], result: list[Any], time_complexity: str, space_complexity: str, steps: list[Step]) -> VisualizationTrace:

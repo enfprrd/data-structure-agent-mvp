@@ -48,7 +48,7 @@ SUPPORTED_DEMO_PAIRS = {
     "binary_tree": {"traverse_preorder", "traverse_inorder", "traverse_postorder", "traverse_level_order"},
     "graph": {"build", "dfs", "bfs", "dijkstra"},
     "search_table": {"sequential_search", "binary_search"},
-    "sort": {"bubble_sort", "insertion_sort", "selection_sort", "quick_sort"},
+    "sort": {"bubble_sort", "insertion_sort", "selection_sort", "quick_sort", "merge_sort"},
 }
 SUPPORTED_STRUCTURES = set(SUPPORTED_DEMO_PAIRS)
 SUPPORTED_OPERATIONS = {operation for operations in SUPPORTED_DEMO_PAIRS.values() for operation in operations}

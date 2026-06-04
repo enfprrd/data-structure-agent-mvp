@@ -7,6 +7,10 @@ from pathlib import Path
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]")
 SPACE_PATTERN = re.compile(r"\s+")
+PHRASE_ALIASES = {
+    "归并算法": "归并排序",
+    "合并排序": "归并排序",
+}
 STOP_TOKENS = {
     "的",
     "了",
@@ -208,7 +212,10 @@ class MarkdownKeywordRetriever:
         return score
 
     def _compact_for_phrase_match(self, text: str) -> str:
-        return SPACE_PATTERN.sub("", text).replace("和", "与")
+        compact = SPACE_PATTERN.sub("", text).replace("和", "与")
+        for alias, canonical in PHRASE_ALIASES.items():
+            compact = compact.replace(alias, canonical)
+        return compact
 
     def _active_domain_terms(self, query_compact: str) -> list[str]:
         matched = [
