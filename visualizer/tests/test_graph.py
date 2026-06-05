@@ -86,3 +86,18 @@ def test_undirected_graph_svg_has_edges_without_arrows() -> None:
     html = render_step_html(trace.steps[-1])
     assert "<line" in html
     assert "marker-end" not in html
+
+
+def test_graph_matrix_preserves_numeric_vertex_labels() -> None:
+    request = graph_req(
+        "dfs",
+        [
+            [0, 1, 1],
+            [1, 0, 0],
+            [1, 0, 0],
+        ],
+        {"vertices": ["1", "2", "3"], "directed": False, "start": "1"},
+    )
+    trace = dispatch(request)
+    assert trace.steps[-1].state["nodes"] == ["1", "2", "3"]
+    assert trace.summary.result == "1 -> 2 -> 3"

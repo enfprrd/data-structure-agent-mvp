@@ -71,6 +71,16 @@ def init_db() -> None:
             );
             """
         )
+        ensure_message_column(conn, "rag_keywords_json", "TEXT NOT NULL DEFAULT '[]'")
+
+
+def ensure_message_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+    }
+    if name not in columns:
+        conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
 
 
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -162,7 +172,7 @@ def load_messages(conversation_id: int, limit: int = 200) -> list[dict[str, Any]
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT role, content, code_blocks_json, show_code, code_check
+            SELECT role, content, code_blocks_json, show_code, code_check, rag_keywords_json
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -188,6 +198,12 @@ def load_messages(conversation_id: int, limit: int = 200) -> list[dict[str, Any]
             message["show_code"] = True
         if row["code_check"]:
             message["code_check"] = str(row["code_check"])
+        try:
+            rag_keywords = json.loads(str(row["rag_keywords_json"]))
+        except json.JSONDecodeError:
+            rag_keywords = []
+        if rag_keywords:
+            message["rag_keywords"] = rag_keywords
         messages.append(message)
     return messages
 
@@ -196,8 +212,8 @@ def append_message(conversation_id: int, message: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO messages (conversation_id, role, content, code_blocks_json, show_code, code_check, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (conversation_id, role, content, code_blocks_json, show_code, code_check, rag_keywords_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -206,6 +222,7 @@ def append_message(conversation_id: int, message: dict[str, Any]) -> None:
                 json.dumps(message.get("code_blocks") or [], ensure_ascii=False),
                 1 if message.get("show_code") else 0,
                 str(message.get("code_check") or ""),
+                json.dumps(message.get("rag_keywords") or [], ensure_ascii=False),
                 utc_now(),
             ),
         )

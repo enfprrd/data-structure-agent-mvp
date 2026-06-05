@@ -77,6 +77,11 @@ PARSER_SYSTEM_PROMPT = f"""
 - params 必须存在；没有参数也输出空对象。
 - initial_state.data 必须是数组。树、图、排序等也要尽量从 C 代码或文字中抽取初始数据；图可用顶点、边或邻接矩阵的数组表达。
 - metadata 默认写入 index_base=1、use_head_node=true、capacity=10，除非题目或代码明确给了别的约定。
+- 图演示必须保留用户给出的顶点标签；用户给的是 1,2,3,4,5 就必须输出 metadata.vertices=["1","2","3","4","5"]，不要改成 A,B,C,D,E。
+- 图如果使用邻接矩阵表示 initial_state.data，必须同时在 metadata.vertices 中给出矩阵行列对应的顶点标签。
+- 图 DFS/BFS 的起点必须放在 metadata.start 或 params.value/target 中，并且标签要和 metadata.vertices 保持一致。
+- 图如果没有边权，不要凭空生成 weight；无向图要写 metadata.directed=false。
+- 用户给出“邻接表 1: 2,3；2: 1,4,5”时，按邻接表解析，不要把逗号后的数字理解为边权。
 - 位置序号默认从 1 开始。
 - 单链表默认带头结点。
 - 顺序表、栈、队列默认 capacity=10，除非代码或题目明确给出。

@@ -158,6 +158,21 @@ def render_styles() -> str:
 def _render_sequence(step: Step) -> str:
     state = step.state
     cell_roles = {item.index: item.role for item in step.highlights.cells}
+    pointer_roles = {item.name: item.role for item in step.highlights.pointers}
+    pointers_by_target: dict[int, list[dict[str, Any]]] = {}
+    pointer_chips = []
+    for pointer in state.get("pointers", []):
+        target = str(pointer.get("target", ""))
+        match = re.fullmatch(r"A\[(\d+)\]", target)
+        if match:
+            pointers_by_target.setdefault(int(match.group(1)), []).append(pointer)
+        name = str(pointer.get("name"))
+        active = " active" if name in pointer_roles else ""
+        value = pointer.get("value")
+        value_text = f"={value}" if value not in (None, "") else ""
+        pointer_chips.append(
+            f"<span class='dsvp-pointer-chip{active}'>{html.escape(name)}{html.escape(value_text)} -> {html.escape(target)}</span>"
+        )
     active_index = _first_int(cell_roles)
     cells = []
     for cell in state.get("cells", []):
@@ -168,10 +183,12 @@ def _render_sequence(step: Step) -> str:
             classes.append("dsvp-trail")
         if role:
             classes.append(_role_class(role))
-        badge = _badge(role) if role else ""
+        badges = [_badge(role)] if role else []
+        for pointer in pointers_by_target.get(index, []):
+            badges.append(f"<span class='dsvp-badge pointer'>{html.escape(str(pointer.get('name')))}</span>")
         cells.append(
             f"<div class='{' '.join(classes)}'>"
-            f"{_marker_row(badge)}"
+            f"{_marker_row(''.join(badges))}"
             f"<span class='dsvp-value'>{html.escape(str(cell.get('value')))}</span>"
             f"<small>{html.escape(str(cell.get('label')))}</small>"
             "</div>"
@@ -181,6 +198,7 @@ def _render_sequence(step: Step) -> str:
         "<div class='dsvp-wrap'>"
         f"<div class='dsvp-row'>{''.join(cells)}</div>"
         f"<div class='dsvp-meta'>length={html.escape(str(meta.get('length')))} / capacity={html.escape(str(meta.get('capacity')))}</div>"
+        f"<div class='dsvp-pointer-row'>{''.join(pointer_chips)}</div>"
         "</div>"
     )
 

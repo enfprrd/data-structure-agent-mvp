@@ -27,6 +27,7 @@ def test_user_device_and_message_persistence(tmp_path, monkeypatch) -> None:
             "content": "栈是后进先出的线性表。",
             "code_blocks": ["```c\nint top = -1;\n```"],
             "code_check": "通过",
+            "rag_keywords": ["栈", "后进先出", "顺序栈"],
         },
     )
 
@@ -34,6 +35,7 @@ def test_user_device_and_message_persistence(tmp_path, monkeypatch) -> None:
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[1]["code_blocks"]
     assert messages[1]["code_check"] == "通过"
+    assert messages[1]["rag_keywords"] == ["栈", "后进先出", "顺序栈"]
 
     auth_store.clear_messages(conversation_id)
     assert auth_store.load_messages(conversation_id) == []

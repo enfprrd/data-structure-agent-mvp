@@ -7,6 +7,7 @@ import secrets
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -187,34 +188,139 @@ def build_effective_question(
     if not _is_ambiguous_follow_up(current):
         return current
 
-    previous_topic = _last_user_topic(messages)
-    if not previous_topic:
+    if not messages:
         return current
 
     rewritten = _rewrite_follow_up_with_deepseek(current, messages, client)
     if rewritten:
         return rewritten
 
-    return f"{previous_topic}\n追问：{current}"
+    return current
+
+
+def get_recent_rag_keywords(messages: list[dict[str, object]], limit: int = 12) -> list[str]:
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for message in reversed(messages):
+        for raw_keyword in message.get("rag_keywords") or []:
+            keyword = str(raw_keyword).strip()
+            keyword_key = keyword.lower()
+            if not keyword or keyword_key in seen:
+                continue
+            keywords.append(keyword)
+            seen.add(keyword_key)
+            if len(keywords) >= limit:
+                return keywords
+    return keywords
+
+
+def retrieve_with_rag_memory(
+    retriever: MarkdownKeywordRetriever,
+    question: str,
+    rag_keywords: list[str],
+    top_k: int = 3,
+) -> list[dict[str, str]]:
+    user_contexts = retriever.retrieve(question, top_k=top_k)
+    if not rag_keywords:
+        return user_contexts
+
+    keyword_query = " ".join(rag_keywords)
+    combined_query = f"{question}\n当前对话RAG关键词：{keyword_query}"
+    keyword_contexts = retriever.retrieve(keyword_query, top_k=top_k, boost_terms=rag_keywords)
+    combined_contexts = retriever.retrieve(combined_query, top_k=top_k, boost_terms=rag_keywords)
+    return _merge_contexts(user_contexts, combined_contexts, keyword_contexts, top_k=top_k)
+
+
+def _merge_contexts(*groups: list[dict[str, str]], top_k: int) -> list[dict[str, str]]:
+    merged: dict[str, dict[str, str]] = {}
+    for group_index, contexts in enumerate(groups):
+        for context in contexts:
+            source = context["source"]
+            score = int(context.get("score", "0"))
+            bonus = max(0, 2 - group_index) * 10
+            weighted_score = score + bonus
+            existing = merged.get(source)
+            if existing is None or weighted_score > int(existing.get("score", "0")):
+                merged[source] = {**context, "score": str(weighted_score)}
+    return sorted(merged.values(), key=lambda item: int(item["score"]), reverse=True)[:top_k]
+
+
+def build_rag_keywords(
+    client: DeepSeekClient,
+    prior_messages: list[dict[str, object]],
+    question: str,
+    effective_question: str,
+    answer: str,
+    previous_keywords: list[str],
+) -> list[str]:
+    history = build_conversation_context(prior_messages[-6:])
+    prompt = (
+        "你负责为数据结构课程问答维护 RAG 检索关键词记忆。\n"
+        "请根据最近对话、用户新问题、实际用于检索的问题、助教回答，总结目前最能代表本轮对话主题的关键词。\n"
+        "要求：\n"
+        "- 只输出 JSON 字符串数组，不要解释。\n"
+        "- 输出 4 到 10 个关键词。\n"
+        "- 关键词要适合检索教材知识库，例如：图、DFS、深度优先遍历、邻接矩阵、顶点、visited数组。\n"
+        "- 保留最近主主题，不要被短追问里的单个词带偏。\n"
+        "- 如果最近在讨论图，用户说结点或节点时，关键词应优先使用顶点。\n"
+        "- 可以继承上一轮关键词，但要去掉无关词。\n\n"
+        f"上一轮RAG关键词：{json.dumps(previous_keywords, ensure_ascii=False)}\n\n"
+        f"最近对话：\n{history or '暂无'}\n\n"
+        f"用户新问题：{question}\n\n"
+        f"实际检索问题：{effective_question}\n\n"
+        f"助教回答：\n{answer[:3000]}"
+    )
+    try:
+        raw = client.chat(
+            [
+                {"role": "system", "content": "你是数据结构问答系统的RAG关键词提取器。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=180,
+        )
+    except DeepSeekError:
+        return previous_keywords
+    keywords = _parse_rag_keywords(raw)
+    return keywords or previous_keywords
+
+
+def _parse_rag_keywords(raw: str) -> list[str]:
+    cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip()
+    try:
+        values: Any = json.loads(cleaned)
+    except json.JSONDecodeError:
+        values = re.split(r"[,，、\n]", cleaned)
+    if not isinstance(values, list):
+        return []
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        keyword = str(value).strip().strip('"').strip("'")
+        if not keyword or len(keyword) > 24:
+            continue
+        key = keyword.lower()
+        if key in seen:
+            continue
+        keywords.append(keyword)
+        seen.add(key)
+        if len(keywords) >= 10:
+            break
+    return keywords
 
 
 def _is_ambiguous_follow_up(question: str) -> bool:
     compact = re.sub(r"\s+", "", question)
     if not compact:
         return False
-    if len(compact) <= 14 and DEMO_WORD_PATTERN.search(compact):
+    if len(compact) <= 24 and DEMO_WORD_PATTERN.search(compact):
         return True
-    return compact in {"这个呢", "那这个呢", "继续", "继续讲", "继续说", "详细点", "展开讲"}
-
-
-def _last_user_topic(messages: list[dict[str, object]]) -> str:
-    for message in reversed(messages):
-        if str(message.get("role")) != "user":
-            continue
-        content = str(message.get("content", "")).strip()
-        if content and not _is_ambiguous_follow_up(content):
-            return content
-    return ""
+    if compact in {"这个呢", "那这个呢", "继续", "继续讲", "继续说", "详细点", "展开讲"}:
+        return True
+    if len(compact) <= 24 and re.search(r"这个|那个|它|这类|这种|这样|更多|换成|如果是|那要是|呢|吗", compact):
+        return True
+    return False
 
 
 def _rewrite_follow_up_with_deepseek(
@@ -231,6 +337,8 @@ def _rewrite_follow_up_with_deepseek(
         "要求：\n"
         "- 只输出改写后的问题，不要解释。\n"
         "- 如果用户说“演示一下/继续演示/展示一下”，必须继承最近一轮具体主题。\n"
+        "- 如果用户用“这个/它/更多的结点/如果是更多...”等省略说法，必须结合最近对话判断所指对象。\n"
+        "- 如果最近在讨论图，用户说“结点/节点”通常应理解为图的顶点，不要改写到链表结点。\n"
         "- 保留算法或数据结构名称，例如归并排序、二叉树、Dijkstra。\n"
         "- 不要擅自改成链表、顺序表等无关主题。\n"
         "- 如果无法判断，就原样输出用户新问题。\n\n"
@@ -377,6 +485,7 @@ def finish_generation() -> None:
     st.session_state.pending_question = ""
     st.session_state.pending_effective_question = ""
     st.session_state.pending_contexts = []
+    st.session_state.pending_rag_keywords = []
     st.session_state.is_generating = False
     st.session_state.generation_started_at = 0.0
 
@@ -618,6 +727,9 @@ def main() -> None:
     if "pending_contexts" not in st.session_state:
         st.session_state.pending_contexts = []
 
+    if "pending_rag_keywords" not in st.session_state:
+        st.session_state.pending_rag_keywords = []
+
     load_persisted_messages()
 
     with st.sidebar:
@@ -652,6 +764,7 @@ def main() -> None:
             st.session_state.pending_question = ""
             st.session_state.pending_effective_question = ""
             st.session_state.pending_contexts = []
+            st.session_state.pending_rag_keywords = []
             st.session_state.is_generating = False
             st.session_state.generation_started_at = 0.0
             st.session_state.dsvp_request = None
@@ -661,6 +774,10 @@ def main() -> None:
             st.session_state.dsvp_clarification = None
             st.rerun()
 
+        st.divider()
+        recent_keywords = get_recent_rag_keywords(st.session_state.messages)
+        st.markdown("RAG关键词：")
+        st.caption("、".join(recent_keywords) if recent_keywords else "暂无")
         st.divider()
         st.markdown("示例：")
         st.markdown("- 单链表插入怎么演示？")
@@ -695,12 +812,14 @@ def main() -> None:
             except DeepSeekError:
                 rewrite_client = None
         effective_question = build_effective_question(question, st.session_state.messages, rewrite_client)
-        contexts = retriever.retrieve(effective_question, top_k=3)
+        rag_keywords = get_recent_rag_keywords(st.session_state.messages)
+        contexts = retrieve_with_rag_memory(retriever, effective_question, rag_keywords, top_k=3)
         st.session_state.last_contexts = contexts
         append_chat_message({"role": "user", "content": question})
         st.session_state.pending_question = question
         st.session_state.pending_effective_question = effective_question
         st.session_state.pending_contexts = contexts
+        st.session_state.pending_rag_keywords = rag_keywords
         st.rerun()
 
     if not st.session_state.pending_question:
@@ -711,6 +830,7 @@ def main() -> None:
     question = st.session_state.pending_question
     effective_question = st.session_state.get("pending_effective_question") or question
     contexts = st.session_state.pending_contexts
+    previous_rag_keywords = list(st.session_state.get("pending_rag_keywords") or [])
     prior_messages = st.session_state.messages[:-1]
     conversation_context = build_conversation_context(prior_messages)
 
@@ -814,6 +934,14 @@ def main() -> None:
         else:
             st.session_state.dsvp_clarification = None
 
+        current_rag_keywords = build_rag_keywords(
+            client,
+            prior_messages,
+            question,
+            effective_question,
+            answer,
+            previous_rag_keywords,
+        )
         visible_answer, code_blocks = make_teaching_view(answer, user_wants_code(question))
         message_id = len(st.session_state.messages)
         append_chat_message(
@@ -824,6 +952,7 @@ def main() -> None:
                 "code_blocks": code_blocks if not user_wants_code(question) else [],
                 "show_code": user_wants_code(question),
                 "code_check": code_check.summary if code_check.has_code else "",
+                "rag_keywords": current_rag_keywords,
             }
         )
     except Exception as exc:
