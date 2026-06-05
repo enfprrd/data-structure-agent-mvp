@@ -332,7 +332,7 @@ def _render_graph(step: Step) -> str:
     state = step.state
     node_roles = {item.id: item.role for item in step.highlights.nodes}
     order = " -> ".join(str(item) for item in state.get("visit_order", []))
-    graph_html = _render_graph_svg(state.get("nodes", []), state.get("edges", []), node_roles)
+    graph_html = _render_graph_svg(state.get("nodes", []), state.get("edges", []), node_roles, bool(state.get("directed", True)))
     return (
         "<div class='dsvp-wrap'>"
         "<div class='dsvp-graph'>"
@@ -491,7 +491,7 @@ def _render_tree_svg(slots: list[dict[str, Any]], edges: list[dict[str, Any]], n
     )
 
 
-def _render_graph_svg(nodes: list[Any], edges: list[dict[str, Any]], node_roles: dict[str, str]) -> str:
+def _render_graph_svg(nodes: list[Any], edges: list[dict[str, Any]], node_roles: dict[str, str], directed: bool = True) -> str:
     node_ids = [str(node) for node in nodes]
     if not node_ids:
         return "<div class='dsvp-empty'>空图</div>"
@@ -522,13 +522,15 @@ def _render_graph_svg(nodes: list[Any], edges: list[dict[str, Any]], node_roles:
         x1, y1 = positions[src]
         x2, y2 = positions[dst]
         if src == dst:
+            marker = " marker-end='url(#dsvp-arrow)'" if directed else ""
             edge_parts.append(
-                f"<path class='dsvp-svg-edge' d='M{x1:.1f},{y1 - node_radius:.1f} C{x1 + 52:.1f},{y1 - 72:.1f} {x1 + 72:.1f},{y1 + 12:.1f} {x1 + node_radius:.1f},{y1:.1f}' marker-end='url(#dsvp-arrow)' />"
+                f"<path class='dsvp-svg-edge' d='M{x1:.1f},{y1 - node_radius:.1f} C{x1 + 52:.1f},{y1 - 72:.1f} {x1 + 72:.1f},{y1 + 12:.1f} {x1 + node_radius:.1f},{y1:.1f}'{marker} />"
             )
             continue
         line = _shortened_line(x1, y1, x2, y2, node_radius + 2)
+        marker = " marker-end='url(#dsvp-arrow)'" if directed else ""
         edge_parts.append(
-            f"<line class='dsvp-svg-edge' x1='{line[0]:.1f}' y1='{line[1]:.1f}' x2='{line[2]:.1f}' y2='{line[3]:.1f}' marker-end='url(#dsvp-arrow)' />"
+            f"<line class='dsvp-svg-edge' x1='{line[0]:.1f}' y1='{line[1]:.1f}' x2='{line[2]:.1f}' y2='{line[3]:.1f}'{marker} />"
         )
         weight = edge.get("weight")
         if weight not in (None, 1, "1"):
