@@ -6,13 +6,13 @@ from rag import MarkdownKeywordRetriever
 
 def test_recent_rag_keywords_keep_latest_unique_terms() -> None:
     messages = [
-        {"role": "assistant", "content": "旧回答", "rag_keywords": ["链表", "结点"]},
-        {"role": "assistant", "content": "新回答", "rag_keywords": ["图", "DFS", "顶点", "结点"]},
+        {"role": "assistant", "content": "old", "rag_keywords": ["linked", "node"]},
+        {"role": "assistant", "content": "new", "rag_keywords": ["graph", "DFS", "vertex", "node"]},
     ]
-    assert get_recent_rag_keywords(messages, limit=4) == ["图", "DFS", "顶点", "结点"]
+    assert get_recent_rag_keywords(messages, limit=4) == ["graph", "DFS", "vertex", "node"]
 
 
-def test_rag_memory_boosts_previous_graph_topic_for_short_followup(tmp_path) -> None:
+def test_rag_plan_boosts_previous_graph_topic_for_short_followup(tmp_path) -> None:
     (tmp_path / "graph.md").write_text(
         "# 图\n\n## 深度优先遍历 DFS\n\n图的 DFS 从顶点出发，使用 visited 数组避免重复访问。\n",
         encoding="utf-8",
@@ -27,8 +27,37 @@ def test_rag_memory_boosts_previous_graph_topic_for_short_followup(tmp_path) -> 
         retriever,
         "如果是更多的结点呢",
         ["图", "DFS", "深度优先遍历", "顶点"],
+        rag_plan={
+            "query_keywords": ["图", "DFS"],
+            "groups": [{"name": "graph", "keywords": ["图", "DFS", "顶点"], "weight": 5}],
+            "history_keywords": ["图", "DFS", "顶点"],
+        },
         top_k=1,
     )
 
     assert contexts
     assert contexts[0]["source"].startswith("graph.md")
+
+
+def test_postorder_traversal_uses_current_rag_plan_over_stale_history() -> None:
+    retriever = MarkdownKeywordRetriever("knowledge")
+    contexts = retrieve_with_rag_memory(
+        retriever,
+        "后序遍历",
+        ["顺序表", "插入"],
+        rag_plan={
+            "query_keywords": ["二叉树", "后序遍历", "遍历"],
+            "groups": [
+                {
+                    "name": "tree_traversal",
+                    "keywords": ["树", "二叉树", "后序遍历"],
+                    "weight": 6,
+                }
+            ],
+            "history_keywords": [],
+        },
+        top_k=1,
+    )
+
+    assert contexts
+    assert contexts[0]["source"].startswith("tree_binary_tree.md")

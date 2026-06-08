@@ -1,0 +1,270 @@
+[
+  {
+    "id": "intro_complexity",
+    "module": "模块 1：绪论",
+    "title": "数据结构与复杂度入门",
+    "duration": "10 分钟",
+    "summary": "建立数据结构学习的基本地图：逻辑结构、存储结构、算法效率。",
+    "objectives": [
+      "区分逻辑结构和存储结构",
+      "理解时间复杂度和空间复杂度的作用",
+      "知道为什么同一个问题可以有多种数据组织方式"
+    ],
+    "sections": [
+      {
+        "heading": "为什么要学数据结构",
+        "body": "数据结构解决的是“数据怎么组织，操作怎么高效”的问题。同样是存一组元素，顺序表适合按下标访问，链表适合频繁插入删除。"
+      },
+      {
+        "heading": "复杂度看什么",
+        "body": "复杂度不关心某台机器跑了几秒，而关心输入规模 n 增大时，操作次数如何增长。常见阶包括 O(1)、O(log n)、O(n)、O(n log n)、O(n^2)。"
+      }
+    ],
+    "quiz": [
+      {
+        "question": "顺序表按下标访问第 i 个元素通常是什么复杂度？",
+        "choices": ["O(1)", "O(n)", "O(log n)", "O(n^2)"],
+        "answer": "O(1)",
+        "explanation": "顺序表连续存储，可以通过首地址和下标直接计算位置。"
+      },
+      {
+        "question": "链表更适合哪类操作？",
+        "choices": ["已知结点后的插入删除", "随机访问第 i 个元素", "二分查找", "按物理地址连续遍历"],
+        "answer": "已知结点后的插入删除",
+        "explanation": "链表不需要整体移动元素，只需调整指针。"
+      }
+    ]
+  },
+  {
+    "id": "sequential_list_insert",
+    "module": "模块 2：线性表",
+    "title": "顺序表插入：为什么要从后往前移",
+    "duration": "12 分钟",
+    "summary": "用动画理解顺序表插入时元素后移、空位产生和新值写入的全过程。",
+    "objectives": [
+      "理解顺序表插入的位置含义",
+      "掌握从后往前移动元素的原因",
+      "能说出顺序表插入的时间复杂度"
+    ],
+    "sections": [
+      {
+        "heading": "核心动作",
+        "body": "在第 position 个位置插入新元素时，position 及其之后的元素都要向后移动一格。为了避免覆盖原数据，移动顺序必须从最后一个元素开始。"
+      },
+      {
+        "heading": "复杂度",
+        "body": "最坏情况下在表头插入，需要移动 n 个元素，所以时间复杂度是 O(n)。如果在表尾插入，移动次数为 0。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "sequential_list",
+      "operation": "insert",
+      "params": { "position": 3, "value": 99 },
+      "initial_state": {
+        "data": [10, 20, 30, 40, 50],
+        "metadata": { "capacity": 8, "index_base": 1 }
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "顺序表插入时为什么通常从最后一个元素开始后移？",
+        "choices": ["避免覆盖还没移动的元素", "为了让数组更短", "为了二分查找", "为了释放头结点"],
+        "answer": "避免覆盖还没移动的元素",
+        "explanation": "如果从前往后移，后面的原值可能被前一个元素覆盖。"
+      }
+    ]
+  },
+  {
+    "id": "linked_list_insert",
+    "module": "模块 2：线性表",
+    "title": "单链表插入：指针顺序不能错",
+    "duration": "12 分钟",
+    "summary": "通过头结点单链表插入，理解先连新结点再改前驱指针的必要性。",
+    "objectives": [
+      "识别前驱结点和新结点",
+      "理解 new->next 与 pre->next 的赋值顺序",
+      "知道链表插入不需要整体移动元素"
+    ],
+    "sections": [
+      {
+        "heading": "关键顺序",
+        "body": "先执行 new->next = pre->next，再执行 pre->next = new。顺序反过来会丢失原来的后继链。"
+      },
+      {
+        "heading": "和顺序表对比",
+        "body": "链表插入本身是 O(1)，但如果需要先按位置查找前驱，则查找前驱通常是 O(n)。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "singly_linked_list",
+      "operation": "insert",
+      "params": { "position": 2, "value": 8 },
+      "initial_state": {
+        "data": [3, 5, 7, 9],
+        "metadata": { "index_base": 1, "use_head_node": true }
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "单链表插入时哪一步应该先做？",
+        "choices": ["new->next = pre->next", "pre->next = new", "free(pre)", "pre = NULL"],
+        "answer": "new->next = pre->next",
+        "explanation": "先保存原后继，再让前驱指向新结点，链才不会断。"
+      }
+    ]
+  },
+  {
+    "id": "stack_bracket",
+    "module": "模块 3：栈和队列",
+    "title": "栈的应用：括号匹配",
+    "duration": "10 分钟",
+    "summary": "用栈理解“后出现的左括号先匹配”的规则。",
+    "objectives": [
+      "理解栈的后进先出",
+      "掌握括号匹配的入栈出栈过程",
+      "能判断常见括号不匹配原因"
+    ],
+    "sections": [
+      {
+        "heading": "匹配规则",
+        "body": "遇到左括号入栈，遇到右括号时检查栈顶。能匹配就出栈，不能匹配或栈空就是错误。最后栈必须为空。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "stack",
+      "operation": "bracket_matching",
+      "params": { "values": ["(", "[", "]", ")", "{", "}"] },
+      "initial_state": {
+        "data": ["(", "[", "]", ")", "{", "}"],
+        "metadata": { "expression": "([]){}" }
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "括号匹配中遇到右括号时，应该和谁比较？",
+        "choices": ["栈顶左括号", "栈底左括号", "第一个字符", "最后一个字符"],
+        "answer": "栈顶左括号",
+        "explanation": "栈顶保存的是最近尚未匹配的左括号。"
+      }
+    ]
+  },
+  {
+    "id": "tree_traversal",
+    "module": "模块 4：树和二叉树",
+    "title": "二叉树遍历：先序、中序、后序",
+    "duration": "12 分钟",
+    "summary": "围绕根结点访问时机，区分三种深度优先遍历。",
+    "objectives": [
+      "理解根、左子树、右子树的访问顺序",
+      "区分先序、中序、后序",
+      "能根据遍历规则写出访问序列"
+    ],
+    "sections": [
+      {
+        "heading": "记忆方式",
+        "body": "先序是根左右，中序是左根右，后序是左右根。所谓先、中、后，指的是根结点在访问顺序中的位置。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "binary_tree",
+      "operation": "traverse_preorder",
+      "params": {},
+      "initial_state": {
+        "data": ["A", "B", "C", "D", "E", "F"],
+        "metadata": {}
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "中序遍历中根结点在什么时候访问？",
+        "choices": ["左子树之后、右子树之前", "最先访问", "最后访问", "随机访问"],
+        "answer": "左子树之后、右子树之前",
+        "explanation": "中序规则是左、根、右。"
+      }
+    ]
+  },
+  {
+    "id": "graph_bfs",
+    "module": "模块 5：图",
+    "title": "图的 BFS：为什么要用队列",
+    "duration": "12 分钟",
+    "summary": "用层层扩展的方式理解广度优先搜索。",
+    "objectives": [
+      "理解 BFS 的按层访问特点",
+      "知道队列在 BFS 中的作用",
+      "能区分 BFS 和 DFS 的访问风格"
+    ],
+    "sections": [
+      {
+        "heading": "核心思想",
+        "body": "BFS 从起点开始，先访问距离为 1 的邻接点，再访问距离为 2 的点。队列保证先发现的顶点先扩展。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "graph",
+      "operation": "bfs",
+      "params": { "target": "A" },
+      "initial_state": {
+        "data": ["A", "B", "C", "D", "E"],
+        "metadata": {
+          "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "E"]]
+        }
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "BFS 通常借助哪种结构保存待扩展顶点？",
+        "choices": ["队列", "栈", "堆", "哈希表"],
+        "answer": "队列",
+        "explanation": "队列的先进先出让顶点按发现顺序扩展。"
+      }
+    ]
+  },
+  {
+    "id": "binary_search",
+    "module": "模块 6：查找",
+    "title": "折半查找：有序是前提",
+    "duration": "10 分钟",
+    "summary": "通过区间缩小理解折半查找的条件和复杂度。",
+    "objectives": [
+      "知道折半查找必须基于有序顺序表",
+      "理解 low、mid、high 的变化",
+      "掌握 O(log n) 的来源"
+    ],
+    "sections": [
+      {
+        "heading": "前提条件",
+        "body": "折半查找每次都根据中间元素排除一半区间，所以表必须有序，并且要能快速访问中间位置。"
+      }
+    ],
+    "demo": {
+      "version": "1.0",
+      "structure": "search_table",
+      "operation": "binary_search",
+      "params": { "target": 35 },
+      "initial_state": {
+        "data": [5, 12, 18, 23, 35, 47, 59],
+        "metadata": {}
+      },
+      "options": { "language": "c", "explain_level": "beginner" }
+    },
+    "quiz": [
+      {
+        "question": "折半查找最重要的前提是什么？",
+        "choices": ["线性表有序", "线性表无序", "必须是链表", "必须用递归"],
+        "answer": "线性表有序",
+        "explanation": "没有有序性，就无法根据 mid 排除半个区间。"
+      }
+    ]
+  }
+]

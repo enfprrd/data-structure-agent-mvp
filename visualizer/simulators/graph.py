@@ -271,7 +271,7 @@ def _parse_graph(data: list[Any], metadata: dict[str, Any]) -> dict[str, Any]:
     vertices = [str(v) for v in metadata.get("vertices", [])]
     edges: list[dict[str, Any]] = []
     directed = bool(metadata.get("directed", True))
-    if data and all(isinstance(row, list) for row in data):
+    if data and _looks_like_adjacency_matrix(data):
         size = len(data)
         if not vertices:
             vertices = [chr(ord("A") + index) for index in range(size)]
@@ -316,6 +316,30 @@ def _fmt(value: float) -> str:
     if value == float("inf"):
         return "∞"
     return str(int(value)) if value == int(value) else str(value)
+
+
+def _looks_like_adjacency_matrix(data: list[Any]) -> bool:
+    if not data or not all(isinstance(row, list) for row in data):
+        return False
+    size = len(data)
+    if not all(len(row) == size for row in data):
+        return False
+    for row in data:
+        for value in row:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                continue
+            if isinstance(value, str):
+                try:
+                    float(value)
+                except ValueError:
+                    return False
+                continue
+            if value is None:
+                continue
+            return False
+    return True
 
 
 def _undirected_edges(graph: dict[str, Any]) -> list[dict[str, Any]]:

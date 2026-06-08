@@ -9,3 +9,5 @@ data/
 streamlit.*.log
 kimi.html
 ds_book_txt_ocr.zip
+.playwright-cli/
+output/

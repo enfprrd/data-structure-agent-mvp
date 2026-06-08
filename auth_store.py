@@ -69,9 +69,28 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS learning_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                device_id INTEGER,
+                conversation_id INTEGER,
+                tag TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                correct INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
             """
         )
         ensure_message_column(conn, "rag_keywords_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_message_column(conn, "quiz_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_message_column(conn, "step_links_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_message_column(conn, "demo_request_json", "TEXT NOT NULL DEFAULT '{}'")
 
 
 def ensure_message_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
@@ -81,6 +100,14 @@ def ensure_message_column(conn: sqlite3.Connection, name: str, definition: str) 
     }
     if name not in columns:
         conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
+
+
+def _json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -119,6 +146,13 @@ def authenticate_user(username: str, password: str) -> tuple[bool, str, dict[str
     if not secrets.compare_digest(password_hash, str(row["password_hash"])):
         return False, "用户名或密码错误。", None
     return True, "登录成功。", {"id": int(row["id"]), "username": str(row["username"])}
+
+
+def verify_user(username: str, password: str) -> tuple[bool, int | str]:
+    ok, message, user = authenticate_user(username, password)
+    if ok and user:
+        return True, int(user["id"])
+    return False, message
 
 
 def ensure_device(token: str, user_id: int | None = None) -> int:
@@ -172,7 +206,7 @@ def load_messages(conversation_id: int, limit: int = 200) -> list[dict[str, Any]
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT role, content, code_blocks_json, show_code, code_check, rag_keywords_json
+            SELECT role, content, code_blocks_json, show_code, code_check, rag_keywords_json, quiz_json, step_links_json, demo_request_json
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -183,10 +217,7 @@ def load_messages(conversation_id: int, limit: int = 200) -> list[dict[str, Any]
 
     messages: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
-        try:
-            code_blocks = json.loads(str(row["code_blocks_json"]))
-        except json.JSONDecodeError:
-            code_blocks = []
+        code_blocks = _json_list(row["code_blocks_json"])
         message: dict[str, Any] = {
             "id": index,
             "role": str(row["role"]),
@@ -198,12 +229,21 @@ def load_messages(conversation_id: int, limit: int = 200) -> list[dict[str, Any]
             message["show_code"] = True
         if row["code_check"]:
             message["code_check"] = str(row["code_check"])
-        try:
-            rag_keywords = json.loads(str(row["rag_keywords_json"]))
-        except json.JSONDecodeError:
-            rag_keywords = []
+        rag_keywords = _json_list(row["rag_keywords_json"])
         if rag_keywords:
             message["rag_keywords"] = rag_keywords
+        quiz = _json_list(row["quiz_json"])
+        if quiz:
+            message["quiz"] = quiz
+        step_links = _json_list(row["step_links_json"])
+        if step_links:
+            message["step_links"] = step_links
+        try:
+            demo_request = json.loads(str(row["demo_request_json"]))
+        except json.JSONDecodeError:
+            demo_request = {}
+        if isinstance(demo_request, dict) and demo_request:
+            message["demo_request"] = demo_request
         messages.append(message)
     return messages
 
@@ -212,8 +252,8 @@ def append_message(conversation_id: int, message: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO messages (conversation_id, role, content, code_blocks_json, show_code, code_check, rag_keywords_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (conversation_id, role, content, code_blocks_json, show_code, code_check, rag_keywords_json, quiz_json, step_links_json, demo_request_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -223,6 +263,9 @@ def append_message(conversation_id: int, message: dict[str, Any]) -> None:
                 1 if message.get("show_code") else 0,
                 str(message.get("code_check") or ""),
                 json.dumps(message.get("rag_keywords") or [], ensure_ascii=False),
+                json.dumps(message.get("quiz") or [], ensure_ascii=False),
+                json.dumps(message.get("step_links") or [], ensure_ascii=False),
+                json.dumps(message.get("demo_request") or {}, ensure_ascii=False),
                 utc_now(),
             ),
         )
@@ -233,3 +276,68 @@ def clear_messages(conversation_id: int) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (utc_now(), conversation_id))
+
+
+def add_learning_event(
+    *,
+    user_id: int | None,
+    device_id: int | None,
+    conversation_id: int | None,
+    tag: str,
+    source_type: str,
+    prompt: str,
+    correct: bool,
+    note: str = "",
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO learning_events
+                (user_id, device_id, conversation_id, tag, source_type, prompt, correct, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                device_id,
+                conversation_id,
+                tag,
+                source_type,
+                prompt,
+                1 if correct else 0,
+                note,
+                utc_now(),
+            ),
+        )
+
+
+def load_weak_points(user_id: int | None, device_id: int | None, limit: int = 8) -> list[dict[str, Any]]:
+    where = "user_id = ?" if user_id is not None else "device_id = ?"
+    key = user_id if user_id is not None else device_id
+    if key is None:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                tag,
+                COUNT(*) AS attempts,
+                SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END) AS misses,
+                MAX(created_at) AS last_seen_at
+            FROM learning_events
+            WHERE {where}
+            GROUP BY tag
+            HAVING misses > 0
+            ORDER BY misses DESC, last_seen_at DESC
+            LIMIT ?
+            """,
+            (key, limit),
+        ).fetchall()
+    return [
+        {
+            "tag": str(row["tag"]),
+            "attempts": int(row["attempts"]),
+            "misses": int(row["misses"]),
+            "last_seen_at": str(row["last_seen_at"]),
+        }
+        for row in rows
+    ]

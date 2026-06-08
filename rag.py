@@ -128,9 +128,16 @@ class MarkdownKeywordRetriever:
     def __init__(self, knowledge_dir: Path | str) -> None:
         self.knowledge_dir = Path(knowledge_dir)
 
-    def retrieve(self, query: str, top_k: int = 3, boost_terms: list[str] | None = None) -> list[dict[str, str]]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 3,
+        boost_terms: list[str] | None = None,
+        boost_weights: dict[str, int] | None = None,
+    ) -> list[dict[str, str]]:
         query_tokens = self._tokenize(query)
         boost_terms = [term.strip() for term in (boost_terms or []) if term.strip()]
+        boost_weights = {term.strip(): int(weight) for term, weight in (boost_weights or {}).items() if term.strip()}
         if not query_tokens and not any(term in query for term in DOMAIN_TERMS) and not boost_terms:
             return []
 
@@ -140,7 +147,7 @@ class MarkdownKeywordRetriever:
         for markdown_file in sorted(self.knowledge_dir.glob("*.md")):
             text = markdown_file.read_text(encoding="utf-8")
             for chunk_index, chunk in enumerate(self._split_markdown(text), start=1):
-                score = self._score(query, query_counter, chunk, boost_terms)
+                score = self._score(query, query_counter, chunk, boost_terms, boost_weights)
                 if score <= 0:
                     continue
 
@@ -176,7 +183,14 @@ class MarkdownKeywordRetriever:
             if token.lower() not in STOP_TOKENS
         ]
 
-    def _score(self, query: str, query_counter: Counter[str], chunk: str, boost_terms: list[str] | None = None) -> int:
+    def _score(
+        self,
+        query: str,
+        query_counter: Counter[str],
+        chunk: str,
+        boost_terms: list[str] | None = None,
+        boost_weights: dict[str, int] | None = None,
+    ) -> int:
         chunk_tokens = Counter(self._tokenize(chunk))
         score = 0
         for token, count in query_counter.items():
@@ -210,16 +224,18 @@ class MarkdownKeywordRetriever:
             first_heading = self._compact_for_phrase_match(headings[0].lower())
             if any(self._compact_for_phrase_match(term) in first_heading for term in matched_terms):
                 score += 30
+        boost_weights = boost_weights or {}
         for term in boost_terms or []:
             term_compact = self._compact_for_phrase_match(term.lower())
             if not term_compact:
                 continue
+            weight = max(1, int(boost_weights.get(term, 1)))
             if term_compact in chunk_compact:
-                score += max(12, len(term) * 10)
+                score += max(12, len(term) * 10) * weight
             for heading in headings:
                 heading_compact = self._compact_for_phrase_match(heading.lower())
                 if term_compact in heading_compact:
-                    score += max(18, len(term) * 14)
+                    score += max(18, len(term) * 14) * weight
         return score
 
     def _compact_for_phrase_match(self, text: str) -> str:

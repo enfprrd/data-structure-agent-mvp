@@ -101,3 +101,19 @@ def test_graph_matrix_preserves_numeric_vertex_labels() -> None:
     trace = dispatch(request)
     assert trace.steps[-1].state["nodes"] == ["1", "2", "3"]
     assert trace.summary.result == "1 -> 2 -> 3"
+
+
+def test_graph_string_edge_rows_are_not_treated_as_matrix_weights() -> None:
+    request = graph_req(
+        "dfs",
+        [
+            ["A", "B"],
+            ["B", "D"],
+            ["B", "E"],
+            ["A", "C"],
+        ],
+        {"start": "A"},
+    )
+    trace = dispatch(request)
+    assert trace.summary.result == "A -> B -> D -> E -> C"
+    assert trace.steps[-1].state["nodes"] == ["A", "B", "D", "E", "C"]
