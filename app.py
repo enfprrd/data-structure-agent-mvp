@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import html
 import os
 import re
@@ -16,6 +17,11 @@ import streamlit.components.v1 as components
 import auth_store
 from code_checker import check_c_code_in_answer
 from llm import DeepSeekClient, DeepSeekError, load_dotenv
+from ppt_learning import (
+    answer_with_context_pack,
+    build_context_pack,
+    parse_pptx_to_slide_cards,
+)
 from rag import MarkdownKeywordRetriever
 from visualizer.dispatcher import dispatch
 from visualizer.intent_parser import parse_operation_request
@@ -639,6 +645,162 @@ def render_mainline_learning() -> None:
         _render_lesson_detail(lesson, progress)
 
 
+def render_ppt_learning_mode() -> None:
+    st.markdown("### PPT学习模式")
+    st.caption("第一阶段只解析 PPTX 中的文字、表格和备注；不会把截图或图片传给模型。")
+
+    uploaded = st.file_uploader("上传 PPTX", type=["pptx"], key="pptx_uploader")
+    local_path = st.text_input(
+        "或输入本地 PPTX 路径",
+        placeholder=r"C:\Users\ROG\Desktop\lecture.pptx",
+        key="pptx_local_path",
+    )
+
+    pptx_bytes: bytes | None = None
+    deck_name = ""
+    if uploaded is not None:
+        pptx_bytes = uploaded.getvalue()
+        deck_name = uploaded.name
+    elif local_path.strip():
+        path = Path(local_path.strip().strip('"'))
+        if path.exists() and path.suffix.lower() == ".pptx":
+            pptx_bytes = path.read_bytes()
+            deck_name = path.name
+        else:
+            st.warning("没有找到这个 PPTX 文件，或文件后缀不是 .pptx。")
+
+    if not pptx_bytes:
+        st.info("先上传一份 PPTX，或填入本机 PPTX 路径。")
+        return
+
+    deck_hash = hashlib.sha1(pptx_bytes).hexdigest()[:12]
+    if st.session_state.get("ppt_deck_hash") != deck_hash:
+        st.session_state.ppt_deck_hash = deck_hash
+        st.session_state.ppt_deck_name = deck_name
+        st.session_state.ppt_slide_index = 0
+        st.session_state.ppt_messages = []
+        try:
+            meta_client = DeepSeekClient(timeout=30)
+        except DeepSeekError:
+            meta_client = None
+            st.warning("DeepSeek 暂不可用，已先用本地摘要和关键词生成 SlideCard。")
+        with st.spinner("正在本地解析 PPT，并为每页生成 SlideCard..."):
+            try:
+                st.session_state.ppt_slide_cards = parse_pptx_to_slide_cards(
+                    deck_id=deck_hash,
+                    pptx_bytes=pptx_bytes,
+                    client=meta_client,
+                )
+            except Exception as exc:
+                st.error(f"PPT 解析失败：{exc}")
+                st.session_state.ppt_slide_cards = []
+                return
+
+    slide_cards = list(st.session_state.get("ppt_slide_cards") or [])
+    if not slide_cards:
+        st.warning("这份 PPT 没有解析出可用页。")
+        return
+
+    current_index = min(max(int(st.session_state.get("ppt_slide_index", 0)), 0), len(slide_cards) - 1)
+    st.session_state.ppt_slide_index = current_index
+    current_slide = slide_cards[current_index]
+
+    left_col, right_col = st.columns([0.95, 1.05], gap="large")
+    with left_col:
+        st.markdown(f"#### 第 {current_slide.slide_id} / {len(slide_cards)} 页：{current_slide.title or '未命名页'}")
+        prev_col, next_col = st.columns(2)
+        with prev_col:
+            if st.button("上一页", disabled=current_index == 0, use_container_width=True):
+                st.session_state.ppt_slide_index = current_index - 1
+                st.rerun()
+        with next_col:
+            if st.button("下一页", disabled=current_index == len(slide_cards) - 1, use_container_width=True):
+                st.session_state.ppt_slide_index = current_index + 1
+                st.rerun()
+
+        if current_slide.concept_type == "text_missing":
+            st.warning("该页可提取文本不足。第一阶段不会猜测图片内容。")
+        st.markdown("**提取文本**")
+        st.text_area(
+            "当前页提取文本",
+            current_slide.raw_text or "该页没有可提取正文。",
+            height=230,
+            label_visibility="collapsed",
+        )
+        if current_slide.notes:
+            with st.expander("备注 notes", expanded=False):
+                st.markdown(current_slide.notes)
+        if current_slide.tables:
+            with st.expander("表格内容", expanded=False):
+                for table_index, table in enumerate(current_slide.tables, start=1):
+                    st.markdown(f"表格 {table_index}")
+                    st.table(table)
+        with st.expander("SlideCard", expanded=False):
+            st.json(current_slide.to_dict())
+
+    with right_col:
+        st.markdown("#### AI讲解与答疑")
+        explain_clicked = st.button("讲解当前页", use_container_width=True)
+        with st.container(border=False, key="ppt_chat_scroll"):
+            for message in st.session_state.setdefault("ppt_messages", []):
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+        with st.form("ppt_question_form", clear_on_submit=True):
+            ppt_question = st.text_area(
+                "对当前页提问",
+                placeholder="例如：这一页的核心概念是什么？和上一页有什么关系？",
+                height=72,
+            )
+            asked = st.form_submit_button("发送")
+
+        question = ""
+        if explain_clicked:
+            question = "请讲解当前页：先说明本页主题，再讲重点、前后页关系和易错点。"
+        elif asked and ppt_question.strip():
+            question = ppt_question.strip()
+
+        if question:
+            _answer_ppt_question(slide_cards, current_slide.slide_id, question)
+            st.rerun()
+
+
+def _answer_ppt_question(slide_cards: list[Any], current_slide_id: int, question: str) -> None:
+    st.session_state.ppt_messages.append({"role": "user", "content": question})
+    try:
+        client = DeepSeekClient()
+    except DeepSeekError as exc:
+        st.session_state.ppt_messages.append({"role": "assistant", "content": f"DeepSeek API 调用失败：{exc}"})
+        return
+
+    retriever = MarkdownKeywordRetriever(KNOWLEDGE_DIR)
+    context_pack = build_context_pack(
+        slide_cards=slide_cards,
+        current_slide_id=current_slide_id,
+        question=question,
+        conversation_messages=st.session_state.ppt_messages[:-1],
+        textbook_retriever=retriever,
+        top_k=3,
+    )
+    try:
+        answer = answer_with_context_pack(client, context_pack, question)
+    except DeepSeekError as exc:
+        answer = f"DeepSeek API 调用失败：{exc}"
+
+    source_pages = [context_pack.current_slide.slide_id]
+    source_pages.extend(card.slide_id for card in context_pack.retrieved_slides)
+    source_label = "、".join(str(page) for page in sorted(set(source_pages)))
+    if "来源" not in answer:
+        answer = f"{answer}\n\n来源页码：第 {source_label} 页"
+    st.session_state.ppt_messages.append(
+        {
+            "role": "assistant",
+            "content": answer,
+            "source_pages": source_pages,
+        }
+    )
+
+
 def _group_lessons_by_module(lessons: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
     grouped: list[tuple[str, list[dict[str, Any]]]] = []
     index: dict[str, list[dict[str, Any]]] = {}
@@ -1230,6 +1392,18 @@ def main() -> None:
             scrollbar-gutter: stable;
             -webkit-overflow-scrolling: touch;
         }
+        .st-key-ppt_chat_scroll {
+            height: min(520px, calc(100dvh - 21rem)) !important;
+            min-height: 280px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            -webkit-overflow-scrolling: touch;
+            padding-right: 0.35rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #ffffff;
+        }
         .stChatMessage {
             border: 1px solid #e5e7eb;
             border-radius: 14px;
@@ -1263,6 +1437,10 @@ def main() -> None:
                 height: calc(100dvh - 15.75rem) !important;
                 min-height: 260px;
             }
+            .st-key-ppt_chat_scroll {
+                height: calc(100dvh - 19rem) !important;
+                min-height: 260px;
+            }
         }
         @media (max-width: 900px) {
             html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
@@ -1281,6 +1459,12 @@ def main() -> None:
                 min-height: 0 !important;
                 max-height: none !important;
                 overflow: visible !important;
+            }
+            .st-key-ppt_chat_scroll {
+                height: auto !important;
+                min-height: 240px !important;
+                max-height: 55vh !important;
+                overflow-y: auto !important;
             }
             .st-key-demo_panel {
                 height: auto;
@@ -2181,7 +2365,7 @@ def main() -> None:
         render_weak_points_panel()
 
     question = ""
-    qa_tab, mainline_tab, knowledge_tab = st.tabs(["问答", "主线学习", "知识库"])
+    qa_tab, mainline_tab, ppt_tab, knowledge_tab = st.tabs(["问答", "主线学习", "PPT学习模式", "知识库"])
 
     with qa_tab:
         chat_col, demo_col = st.columns([1.35, 1], gap="large")
@@ -2233,6 +2417,10 @@ def main() -> None:
     with mainline_tab:
         with st.container(key="mainline_page"):
             render_mainline_learning()
+
+    with ppt_tab:
+        with st.container(key="ppt_learning_page"):
+            render_ppt_learning_mode()
 
     with knowledge_tab:
         with st.container(key="knowledge_page"):
