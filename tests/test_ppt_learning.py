@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import sys
+import types
 
 import pytest
-
-import ppt_learning as ppt_module
 
 from ppt_learning import (
     SlideCard,
     build_context_pack,
     discover_local_pptx_files,
-    render_pptx_slide_images,
     parse_pptx_to_slide_cards,
+    render_pptx_slide_images,
 )
 
 
@@ -95,19 +95,59 @@ def test_discover_local_pptx_files_only_returns_pptx_files(tmp_path: Path) -> No
     assert [path.name for path in discovered] == ["a.pptx", "b.PPTX"]
 
 
-def test_render_pptx_slide_images_falls_back_when_powerpoint_is_unavailable(
+def test_render_pptx_slide_images_uses_powerpoint_export_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    saved = tmp_path / "pptx-out"
+    saved.mkdir()
+
     presentation = pptx.Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
-    slide.shapes.add_textbox(0, 0, 2000000, 1000000).text_frame.text = "fallback render"
-    pptx_path = tmp_path / "fallback.pptx"
+    slide.shapes.add_textbox(0, 0, 2000000, 1000000).text_frame.text = "render path"
+    pptx_path = tmp_path / "render.pptx"
     presentation.save(str(pptx_path))
 
-    monkeypatch.setattr(ppt_module, "_render_pptx_slide_images_with_powerpoint", lambda *args, **kwargs: [])
+    class DummySlide:
+        def Export(self, image_path: str, image_format: str, width: int, height: int) -> None:  # noqa: N802
+            Path(image_path).write_bytes(b"fake-png")
 
-    images = render_pptx_slide_images("fallback-deck", pptx_path.read_bytes(), tmp_path)
+    class DummySlides:
+        Count = 1
+
+        def __call__(self, index: int) -> DummySlide:
+            return DummySlide()
+
+    class DummyPresentation:
+        Slides = DummySlides()
+
+        def Close(self) -> None:  # noqa: N802
+            pass
+
+    class DummyPresentations:
+        def Open(self, *args, **kwargs) -> DummyPresentation:  # noqa: N802
+            return DummyPresentation()
+
+    class DummyPowerPoint:
+        Presentations = DummyPresentations()
+
+        def Quit(self) -> None:  # noqa: N802
+            pass
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+
+    win32com = types.ModuleType("win32com")
+    client = types.ModuleType("win32com.client")
+    client.DispatchEx = lambda *args, **kwargs: DummyPowerPoint()
+    win32com.client = client
+
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    images = render_pptx_slide_images("render-deck", pptx_path.read_bytes(), saved)
 
     assert len(images) == 1
     assert Path(images[0]).exists()

@@ -38,6 +38,7 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 LESSONS_DIR = BASE_DIR / "lessons"
 LOCAL_PPT_DIR = BASE_DIR / "localppt"
 PPT_PREVIEW_DIR = BASE_DIR / "data" / "ppt_previews"
+PPT_PREVIEW_RENDERER_VERSION = "com-only-v2"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
 DEMO_WORD_PATTERN = re.compile(r"演示|展示|继续|播放|可视化|跑一个|看一个|讲一个|试一个")
@@ -629,6 +630,10 @@ def render_mainline_learning() -> None:
 def render_ppt_learning_mode() -> None:
     st.markdown("### PPT学习模式")
     st.caption("第一阶段只解析 PPTX 中的文字、表格和备注；不会把截图或图片传给模型。")
+
+    if st.session_state.get("ppt_preview_renderer_version") != PPT_PREVIEW_RENDERER_VERSION:
+        st.session_state.ppt_preview_renderer_version = PPT_PREVIEW_RENDERER_VERSION
+        st.session_state.pop("ppt_slide_images", None)
 
     uploaded = st.file_uploader("上传 PPTX", type=["pptx"], key="pptx_uploader")
     local_decks = discover_local_pptx_files(LOCAL_PPT_DIR)
