@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
-from ppt_learning import SlideCard, build_context_pack, parse_pptx_to_slide_cards
+from ppt_learning import (
+    SlideCard,
+    build_context_pack,
+    discover_local_pptx_files,
+    parse_pptx_to_slide_cards,
+)
 
 
 pptx = pytest.importorskip("pptx")
@@ -74,3 +80,13 @@ def test_context_pack_is_page_aware_and_retrieves_related_slides() -> None:
     assert pack.next_slide and pack.next_slide["slide_id"] == 3
     assert [item["slide_id"] for item in pack.deck_outline] == [1, 2, 3]
     assert [slide.slide_id for slide in pack.retrieved_slides] == [3]
+
+
+def test_discover_local_pptx_files_only_returns_pptx_files(tmp_path: Path) -> None:
+    (tmp_path / "a.pptx").write_bytes(b"pptx-a")
+    (tmp_path / "b.PPTX").write_bytes(b"pptx-b")
+    (tmp_path / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    discovered = discover_local_pptx_files(tmp_path)
+
+    assert [path.name for path in discovered] == ["a.pptx", "b.PPTX"]

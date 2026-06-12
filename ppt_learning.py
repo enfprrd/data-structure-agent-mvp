@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
+from conversation_context import format_message_history
 from llm import DeepSeekClient, DeepSeekError
 from rag import MarkdownKeywordRetriever
 
@@ -68,6 +71,77 @@ def parse_pptx_to_slide_cards(
             card.concept_type = "text_missing"
         cards.append(card)
     return cards
+
+
+def render_pptx_slide_images(
+    deck_id: str,
+    pptx_bytes: bytes,
+    output_root: Path | str,
+    width: int = 1440,
+    height: int = 810,
+) -> list[str]:
+    """Render PPTX slides to local PNG files for user-facing preview.
+
+    This is display-only. The generated images are never sent to DeepSeek.
+    """
+    output_dir = (Path(output_root) / deck_id).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = sorted(output_dir.glob("slide_*.png"))
+    if existing:
+        return [str(path) for path in existing]
+
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        return []
+
+    with tempfile.TemporaryDirectory(prefix="ppt_render_") as temp_dir:
+        temp_path = Path(temp_dir) / f"{deck_id}.pptx"
+        temp_path.write_bytes(pptx_bytes)
+
+        powerpoint = None
+        presentation = None
+        pythoncom.CoInitialize()
+        try:
+            powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
+            presentation = powerpoint.Presentations.Open(
+                str(temp_path),
+                ReadOnly=True,
+                Untitled=False,
+                WithWindow=False,
+            )
+            rendered: list[str] = []
+            for index in range(1, presentation.Slides.Count + 1):
+                image_path = output_dir / f"slide_{index:03d}.png"
+                presentation.Slides(index).Export(str(image_path), "PNG", width, height)
+                rendered.append(str(image_path))
+            return rendered
+        except Exception:
+            return []
+        finally:
+            if presentation is not None:
+                try:
+                    presentation.Close()
+                except Exception:
+                    pass
+            if powerpoint is not None:
+                try:
+                    powerpoint.Quit()
+                except Exception:
+                    pass
+            pythoncom.CoUninitialize()
+
+
+def discover_local_pptx_files(directory: Path | str) -> list[Path]:
+    base = Path(directory)
+    if not base.exists() or not base.is_dir():
+        return []
+    return sorted(
+        [path for path in base.iterdir() if path.is_file() and path.suffix.lower() == ".pptx"],
+        key=lambda path: path.name.lower(),
+    )
 
 
 def build_context_pack(
@@ -194,16 +268,15 @@ def retrieve_related_slides(
     return [card for _, card in scored[:top_k]]
 
 
-def summarize_conversation(messages: list[dict[str, str]], max_items: int = 6) -> str:
-    if not messages:
-        return "暂无会话上下文。"
-    lines: list[str] = []
-    for message in messages[-max_items:]:
-        role = "用户" if message.get("role") == "user" else "助教"
-        content = _shorten(str(message.get("content", "")).strip(), 180)
-        if content:
-            lines.append(f"{role}: {content}")
-    return "\n".join(lines) if lines else "暂无会话上下文。"
+def summarize_conversation(messages: list[dict[str, object]], max_items: int = 6) -> str:
+    return format_message_history(
+        messages,
+        include_code_blocks=False,
+        max_messages=max_items,
+        per_message_limit=180,
+        empty_text="暂无会话上下文。",
+        separator="\n",
+    )
 
 
 def _extract_slide(deck_id: str, slide_id: int, slide: Any) -> SlideCard:

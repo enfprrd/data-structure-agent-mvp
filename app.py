@@ -4,6 +4,7 @@ import json
 import hashlib
 import html
 import os
+import random
 import re
 import secrets
 import time
@@ -15,12 +16,15 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import auth_store
+from conversation_context import build_chat_history_messages, format_message_history
 from code_checker import check_c_code_in_answer
 from llm import DeepSeekClient, DeepSeekError, load_dotenv
 from ppt_learning import (
     answer_with_context_pack,
     build_context_pack,
+    discover_local_pptx_files,
     parse_pptx_to_slide_cards,
+    render_pptx_slide_images,
 )
 from rag import MarkdownKeywordRetriever
 from visualizer.dispatcher import dispatch
@@ -32,6 +36,8 @@ from visualizer.renderers.html_renderer import render_step_html, render_styles
 BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 LESSONS_DIR = BASE_DIR / "lessons"
+LOCAL_PPT_DIR = BASE_DIR / "localppt"
+PPT_PREVIEW_DIR = BASE_DIR / "data" / "ppt_previews"
 SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.txt"
 CODE_BLOCK_PATTERN = r"```(?:c|C)\s*.*?```"
 DEMO_WORD_PATTERN = re.compile(r"演示|展示|继续|播放|可视化|跑一个|看一个|讲一个|试一个")
@@ -168,32 +174,7 @@ def build_user_prompt(
 - 这份 C 代码会作为右侧演示板理解演示意图和参数的依据。
 如果用户不是在要求演示，也没有明确要求完整代码，回答末尾保留一个简短 C 语言代码块即可。"""
 def build_conversation_context(messages: list[dict[str, object]]) -> str:
-    lines: list[str] = []
-    for message in messages:
-        role = str(message.get("role", "user"))
-        label = "用户" if role == "user" else "助教"
-        content = str(message.get("content", "")).strip()
-        code_blocks = message.get("code_blocks")
-        if code_blocks:
-            content = content + "\n" + "\n".join(str(block) for block in code_blocks)
-        if content:
-            lines.append(f"{label}：{content}")
-    return "\n\n".join(lines)
-
-
-def build_chat_history_messages(messages: list[dict[str, object]]) -> list[dict[str, str]]:
-    history: list[dict[str, str]] = []
-    for message in messages:
-        role = str(message.get("role", "user"))
-        if role not in {"user", "assistant"}:
-            continue
-        content = str(message.get("content", "")).strip()
-        code_blocks = message.get("code_blocks")
-        if code_blocks:
-            content = content + "\n" + "\n".join(str(block) for block in code_blocks)
-        if content:
-            history.append({"role": role, "content": content})
-    return history
+    return format_message_history(messages, include_code_blocks=True, separator="\n\n", empty_text="")
 
 
 def build_effective_question(
@@ -636,7 +617,7 @@ def render_mainline_learning() -> None:
                 state = progress.get(lesson["id"], {})
                 status = "已完成" if state.get("completed") else "学习中" if lesson["id"] == current_id else "未学"
                 label = f"{lesson['title']} · {status}"
-                if st.button(label, key=f"lesson_nav_{lesson['id']}", use_container_width=True):
+                if st.button(label, key=f"lesson_nav_{lesson['id']}", width="stretch"):
                     st.session_state.current_lesson_id = lesson["id"]
                     st.rerun()
 
@@ -650,6 +631,18 @@ def render_ppt_learning_mode() -> None:
     st.caption("第一阶段只解析 PPTX 中的文字、表格和备注；不会把截图或图片传给模型。")
 
     uploaded = st.file_uploader("上传 PPTX", type=["pptx"], key="pptx_uploader")
+    local_decks = discover_local_pptx_files(LOCAL_PPT_DIR)
+    local_selection = None
+    if local_decks:
+        local_selection = st.selectbox(
+            "从本地课件库选择",
+            options=[None, *local_decks],
+            format_func=lambda item: "请选择一个本地课件" if item is None else f"{item.name}（{item.stat().st_size / 1024 / 1024:.1f} MB）",
+            key="pptx_local_library_choice",
+        )
+    else:
+        st.info("`localppt/` 里还没有可用的 .pptx 课件。")
+
     local_path = st.text_input(
         "或输入本地 PPTX 路径",
         placeholder=r"C:\Users\ROG\Desktop\lecture.pptx",
@@ -661,6 +654,9 @@ def render_ppt_learning_mode() -> None:
     if uploaded is not None:
         pptx_bytes = uploaded.getvalue()
         deck_name = uploaded.name
+    elif isinstance(local_selection, Path):
+        pptx_bytes = local_selection.read_bytes()
+        deck_name = local_selection.name
     elif local_path.strip():
         path = Path(local_path.strip().strip('"'))
         if path.exists() and path.suffix.lower() == ".pptx":
@@ -691,10 +687,22 @@ def render_ppt_learning_mode() -> None:
                     pptx_bytes=pptx_bytes,
                     client=meta_client,
                 )
+                st.session_state.ppt_slide_images = render_pptx_slide_images(
+                    deck_id=deck_hash,
+                    pptx_bytes=pptx_bytes,
+                    output_root=PPT_PREVIEW_DIR,
+                )
             except Exception as exc:
                 st.error(f"PPT 解析失败：{exc}")
                 st.session_state.ppt_slide_cards = []
+                st.session_state.ppt_slide_images = []
                 return
+    elif "ppt_slide_images" not in st.session_state:
+        st.session_state.ppt_slide_images = render_pptx_slide_images(
+            deck_id=deck_hash,
+            pptx_bytes=pptx_bytes,
+            output_root=PPT_PREVIEW_DIR,
+        )
 
     slide_cards = list(st.session_state.get("ppt_slide_cards") or [])
     if not slide_cards:
@@ -704,47 +712,56 @@ def render_ppt_learning_mode() -> None:
     current_index = min(max(int(st.session_state.get("ppt_slide_index", 0)), 0), len(slide_cards) - 1)
     st.session_state.ppt_slide_index = current_index
     current_slide = slide_cards[current_index]
+    slide_images = list(st.session_state.get("ppt_slide_images") or [])
 
     left_col, right_col = st.columns([0.95, 1.05], gap="large")
     with left_col:
         st.markdown(f"#### 第 {current_slide.slide_id} / {len(slide_cards)} 页：{current_slide.title or '未命名页'}")
         prev_col, next_col = st.columns(2)
         with prev_col:
-            if st.button("上一页", disabled=current_index == 0, use_container_width=True):
+            if st.button("上一页", disabled=current_index == 0, width="stretch"):
                 st.session_state.ppt_slide_index = current_index - 1
                 st.rerun()
         with next_col:
-            if st.button("下一页", disabled=current_index == len(slide_cards) - 1, use_container_width=True):
+            if st.button("下一页", disabled=current_index == len(slide_cards) - 1, width="stretch"):
                 st.session_state.ppt_slide_index = current_index + 1
                 st.rerun()
 
+        if current_index < len(slide_images) and Path(slide_images[current_index]).exists():
+            st.image(slide_images[current_index], width="stretch")
+        else:
+            st.info("当前环境暂时无法渲染 PPT 原图预览，但 AI 仍会基于本地解析出的文本答疑。")
+
         if current_slide.concept_type == "text_missing":
-            st.warning("该页可提取文本不足。第一阶段不会猜测图片内容。")
-        st.markdown("**提取文本**")
-        st.text_area(
-            "当前页提取文本",
-            current_slide.raw_text or "该页没有可提取正文。",
-            height=230,
-            label_visibility="collapsed",
-        )
-        if current_slide.notes:
-            with st.expander("备注 notes", expanded=False):
+            st.warning("该页可提取文本不足。AI 不会猜测图片内容。")
+        with st.expander("内部解析数据", expanded=False):
+            st.caption("这些文字只用于 AI 上下文，不作为主要阅读视图。")
+            st.text_area(
+                "当前页提取文本",
+                current_slide.raw_text or "该页没有可提取正文。",
+                height=180,
+            )
+            if current_slide.notes:
+                st.markdown("**备注 notes**")
                 st.markdown(current_slide.notes)
-        if current_slide.tables:
-            with st.expander("表格内容", expanded=False):
+            if current_slide.tables:
+                st.markdown("**表格内容**")
                 for table_index, table in enumerate(current_slide.tables, start=1):
                     st.markdown(f"表格 {table_index}")
                     st.table(table)
-        with st.expander("SlideCard", expanded=False):
+            st.markdown("**SlideCard**")
             st.json(current_slide.to_dict())
 
     with right_col:
-        st.markdown("#### AI讲解与答疑")
-        explain_clicked = st.button("讲解当前页", use_container_width=True)
+        st.markdown("#### 讲解与答疑")
+        explain_clicked = st.button("讲解当前页", width="stretch")
         with st.container(border=False, key="ppt_chat_scroll"):
-            for message in st.session_state.setdefault("ppt_messages", []):
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+            render_chat_messages(
+                st.session_state.setdefault("ppt_messages", []),
+                key_prefix="ppt_",
+                show_welcome=False,
+                quiz_source_type="ppt_quiz",
+            )
 
         with st.form("ppt_question_form", clear_on_submit=True):
             ppt_question = st.text_area(
@@ -792,10 +809,61 @@ def _answer_ppt_question(slide_cards: list[Any], current_slide_id: int, question
     source_label = "、".join(str(page) for page in sorted(set(source_pages)))
     if "来源" not in answer:
         answer = f"{answer}\n\n来源页码：第 {source_label} 页"
+    conversation_context = format_message_history(
+        st.session_state.ppt_messages[:-1],
+        include_code_blocks=True,
+        separator="\n\n",
+        empty_text="暂无。",
+    )
+    parse_text = (
+        f"PPT 当前页：第 {current_slide_id} 页\n"
+        f"PPT 对话上下文：\n{conversation_context}\n\n"
+        f"用户问题：\n{question}\n\n"
+        f"讲解与答疑回答：\n{answer}"
+    )
+    try:
+        parsed_demo = parse_operation_request(client, parse_text)
+        if isinstance(parsed_demo, OperationRequest):
+            st.session_state.dsvp_request = parsed_demo
+            st.session_state.dsvp_trace = dispatch(parsed_demo)
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_autoplay = False
+            st.session_state.dsvp_clarification = None
+        elif isinstance(parsed_demo, Clarification):
+            st.session_state.dsvp_clarification = parsed_demo
+            st.session_state.dsvp_request = None
+            st.session_state.dsvp_trace = None
+            st.session_state.dsvp_step = 0
+            st.session_state.dsvp_autoplay = False
+        else:
+            st.session_state.dsvp_clarification = None
+            st.session_state.dsvp_request = None
+            st.session_state.dsvp_trace = None
+    except Exception:
+        st.session_state.dsvp_clarification = None
+        st.session_state.dsvp_request = None
+        st.session_state.dsvp_trace = None
+
+    show_code = user_wants_code(question)
+    visible_answer, code_blocks = make_teaching_view(answer, show_code)
+    code_check = check_c_code_in_answer(answer)
+    current_trace = st.session_state.get("dsvp_trace")
+    quiz = build_interactive_quiz(question, answer, [], current_trace)
+    step_links = build_step_links(current_trace)
     st.session_state.ppt_messages.append(
         {
             "role": "assistant",
-            "content": answer,
+            "content": answer if show_code else visible_answer,
+            "code_blocks": code_blocks if not show_code else [],
+            "show_code": show_code,
+            "code_check": code_check.summary if code_check.has_code else "",
+            "quiz": quiz,
+            "step_links": step_links,
+            "demo_request": (
+                json.loads(st.session_state.dsvp_request.model_dump_json(by_alias=True))
+                if st.session_state.get("dsvp_request") is not None
+                else {}
+            ),
             "source_pages": source_pages,
         }
     )
@@ -965,8 +1033,16 @@ def render_auth_panel() -> None:
                 else:
                     st.error(result)
 
-def render_chat_messages(messages: list[dict[str, object]]) -> None:
+def render_chat_messages(
+    messages: list[dict[str, object]],
+    *,
+    key_prefix: str = "",
+    show_welcome: bool = True,
+    quiz_source_type: str = "chat_quiz",
+) -> None:
     if not messages:
+        if not show_welcome:
+            return
         st.markdown(
             """
             <div class="chat-welcome">
@@ -981,7 +1057,7 @@ def render_chat_messages(messages: list[dict[str, object]]) -> None:
     for message_index, message in enumerate(messages):
         role = str(message.get("role", "user"))
         bubble_role = "user" if role == "user" else "assistant"
-        with st.container(key=f"msg_{bubble_role}_{message_index}"):
+        with st.container(key=f"{key_prefix}msg_{bubble_role}_{message_index}"):
             st.markdown(str(message["content"]))
             timestamp = str(message.get("created_at") or "")
             if timestamp:
@@ -996,26 +1072,32 @@ def render_chat_messages(messages: list[dict[str, object]]) -> None:
                 with st.expander("代码检查", expanded=False):
                     st.markdown(str(code_check))
             if role == "assistant":
-                render_step_links(message, message_index)
-                render_message_quiz(message, message_index)
+                render_step_links(message, message_index, key_prefix=key_prefix)
+                render_message_quiz(
+                    message,
+                    message_index,
+                    key_prefix=key_prefix,
+                    source_type=quiz_source_type,
+                )
 
 
-def render_step_links(message: dict[str, object], message_index: int) -> None:
+def render_step_links(message: dict[str, object], message_index: int, *, key_prefix: str = "") -> None:
     links = list(message.get("step_links") or [])
     if not links:
         return
     has_demo_request = isinstance(message.get("demo_request"), dict) and bool(message.get("demo_request"))
     if not has_demo_request and st.session_state.get("dsvp_trace") is None:
         return
-    with st.expander("同步演示步骤", expanded=False):
+    if st.button("打开动画演示", key=f"{key_prefix}demo_open_{message_index}", width="stretch"):
+        open_demo_dialog_from_message(message)
+        st.rerun()
+    with st.expander("选择具体步骤", expanded=False):
         for link in links:
             step_index = int(link.get("step_index", 0))
             title = str(link.get("title", f"步骤 {step_index + 1}"))
             description = str(link.get("description", ""))
-            if st.button(title, key=f"step_link_{message_index}_{step_index}", use_container_width=True):
-                load_demo_from_message(message)
-                st.session_state.dsvp_step = step_index
-                st.session_state.dsvp_autoplay = False
+            if st.button(title, key=f"{key_prefix}step_link_{message_index}_{step_index}", width="stretch"):
+                open_demo_dialog_from_message(message, step_index=step_index)
                 st.rerun()
             if description:
                 st.caption(description)
@@ -1034,22 +1116,64 @@ def load_demo_from_message(message: dict[str, object]) -> None:
         return
 
 
-def render_message_quiz(message: dict[str, object], message_index: int) -> None:
+def open_demo_dialog_from_message(message: dict[str, object], step_index: int | None = None) -> None:
+    load_demo_from_message(message)
+    if step_index is not None:
+        st.session_state.dsvp_step = step_index
+    st.session_state.dsvp_autoplay = False
+    st.session_state.demo_dialog_open = True
+
+
+def rerun_demo_dialog() -> None:
+    st.session_state.demo_dialog_open = True
+    st.rerun()
+
+
+@st.dialog("演示弹窗", width="large")
+def render_demo_dialog() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDialog"] > div {
+            width: min(92vw, 1320px) !important;
+            max-height: 90dvh !important;
+        }
+        .st-key-demo_dialog_shell {
+            max-height: calc(90dvh - 6.2rem);
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 0.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="demo_dialog_shell"):
+        render_current_trace_demo()
+
+
+def render_message_quiz(
+    message: dict[str, object],
+    message_index: int,
+    *,
+    key_prefix: str = "",
+    source_type: str = "chat_quiz",
+) -> None:
     quiz = list(message.get("quiz") or [])
     if not quiz:
         return
     st.markdown("**随堂小测**")
     for quiz_index, item in enumerate(quiz):
-        key_prefix = f"chat_quiz_{message_index}_{quiz_index}"
-        result_key = f"{key_prefix}_result"
+        quiz_key_prefix = f"{key_prefix}chat_quiz_{message_index}_{quiz_index}"
+        result_key = f"{quiz_key_prefix}_result"
         selected = st.radio(
             str(item.get("question", "")),
             list(item.get("choices") or []),
             index=None,
-            key=f"{key_prefix}_answer",
+            key=f"{quiz_key_prefix}_answer",
             horizontal=False,
         )
-        submitted = st.button("提交小测", key=f"{key_prefix}_submit")
+        submitted = st.button("提交小测", key=f"{quiz_key_prefix}_submit")
         saved_result = st.session_state.get(result_key)
         if submitted and selected:
             correct = selected == item.get("answer")
@@ -1061,7 +1185,7 @@ def render_message_quiz(message: dict[str, object], message_index: int) -> None:
                     device_id=st.session_state.get("device_id"),
                     conversation_id=st.session_state.get("conversation_id"),
                     tag=str(item.get("tag") or "概念理解"),
-                    source_type="chat_quiz",
+                    source_type=source_type,
                     prompt=str(item.get("question", "")),
                     correct=correct,
                     note=f"选择：{selected}",
@@ -1075,10 +1199,10 @@ def render_message_quiz(message: dict[str, object], message_index: int) -> None:
             else:
                 st.warning(f"这里再回看一下：正确答案是 {item.get('answer')}")
                 review_step = item.get("review_step")
-                if review_step is not None and st.button("跳到相关演示步骤", key=f"{key_prefix}_review"):
+                if review_step is not None and st.button("跳到相关演示步骤", key=f"{quiz_key_prefix}_review"):
                     st.session_state.dsvp_step = int(review_step)
                     st.session_state.dsvp_autoplay = False
-                    st.rerun()
+                    rerun_demo_dialog()
             st.caption(str(item.get("explanation", "")))
 
 def user_wants_code(question: str) -> bool:
@@ -1113,6 +1237,25 @@ def infer_weakness_tags(*parts: object) -> list[str]:
         if any(keyword.lower() in text for keyword in keywords):
             tags.append(tag)
     return tags or ["概念理解"]
+
+
+def shuffle_quiz_choices(quiz: dict[str, Any], seed_text: str) -> dict[str, Any]:
+    choices = list(quiz.get("choices") or [])
+    answer = quiz.get("answer")
+    if len(choices) <= 1 or answer not in choices:
+        return quiz
+
+    seed = int(hashlib.sha1(seed_text.encode("utf-8")).hexdigest()[:12], 16)
+    rng = random.Random(seed)
+    shuffled = choices[:]
+    for _ in range(4):
+        rng.shuffle(shuffled)
+        if shuffled != choices:
+            break
+
+    quiz["choices"] = shuffled
+    quiz["answer"] = answer
+    return quiz
 
 
 def build_interactive_quiz(
@@ -1174,6 +1317,7 @@ def build_interactive_quiz(
         },
     }
     quiz = dict(templates.get(primary, templates["概念理解"]))
+    quiz = shuffle_quiz_choices(quiz, f"{primary}|{quiz.get('question')}|{quiz.get('answer')}")
     quiz["tag"] = primary
     quiz["id"] = re.sub(r"\W+", "_", primary.lower())
     if trace is not None and getattr(trace, "steps", None):
@@ -1291,20 +1435,20 @@ def render_current_trace_demo() -> None:
 
     prev_col, play_col, next_col = st.columns([0.24, 0.24, 0.24], gap="small")
     with prev_col:
-        if st.button("‹ 上一步", disabled=current == 0, key="chat_demo_prev", use_container_width=True):
+        if st.button("‹ 上一步", disabled=current == 0, key="chat_demo_prev", width="stretch"):
             st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_step = current - 1
-            st.rerun()
+            rerun_demo_dialog()
     with play_col:
         play_label = "暂停" if st.session_state.get("dsvp_autoplay") else "播放"
-        if st.button(play_label, key="chat_demo_play", use_container_width=True):
+        if st.button(play_label, key="chat_demo_play", width="stretch"):
             st.session_state.dsvp_autoplay = not bool(st.session_state.get("dsvp_autoplay"))
-            st.rerun()
+            rerun_demo_dialog()
     with next_col:
-        if st.button("下一步 ›", disabled=current == len(steps) - 1, key="chat_demo_next", use_container_width=True):
+        if st.button("下一步 ›", disabled=current == len(steps) - 1, key="chat_demo_next", width="stretch"):
             st.session_state.dsvp_autoplay = False
             st.session_state.dsvp_step = current + 1
-            st.rerun()
+            rerun_demo_dialog()
 
     jumped = st.slider(
         "步骤进度",
@@ -1316,23 +1460,23 @@ def render_current_trace_demo() -> None:
     if jumped - 1 != current:
         st.session_state.dsvp_autoplay = False
         st.session_state.dsvp_step = jumped - 1
-        st.rerun()
+        rerun_demo_dialog()
 
     if st.session_state.get("dsvp_autoplay"):
         if current < len(steps) - 1:
             time.sleep(0.65)
             st.session_state.dsvp_step = current + 1
-            st.rerun()
+            rerun_demo_dialog()
         else:
             st.session_state.dsvp_autoplay = False
 
     with st.expander("步骤", expanded=False):
         for index, item in enumerate(steps):
             label = f"{'当前 · ' if index == current else ''}{item.step_id}. {item.title}"
-            if st.button(label, key=f"demo_step_jump_{index}", use_container_width=True):
+            if st.button(label, key=f"demo_step_jump_{index}", width="stretch"):
                 st.session_state.dsvp_autoplay = False
                 st.session_state.dsvp_step = index
-                st.rerun()
+                rerun_demo_dialog()
             if index == current:
                 st.caption(item.description)
 
@@ -1385,12 +1529,10 @@ def main() -> None:
             padding-right: 0.35rem;
         }
         .st-key-chat_scroll {
-            height: min(560px, calc(100dvh - 18rem)) !important;
-            min-height: 300px;
-            overflow-y: auto;
-            overscroll-behavior: contain;
-            scrollbar-gutter: stable;
-            -webkit-overflow-scrolling: touch;
+            height: auto !important;
+            min-height: 0;
+            max-height: none !important;
+            overflow: visible !important;
         }
         .st-key-ppt_chat_scroll {
             height: min(520px, calc(100dvh - 21rem)) !important;
@@ -1409,9 +1551,6 @@ def main() -> None:
             border-radius: 14px;
             padding: 0.25rem 0.5rem;
             background: #ffffff;
-        }
-        section[data-testid="stChatInput"] {
-            position: static;
         }
         @media (max-height: 820px) and (min-width: 901px) {
             [data-testid="stMainBlockContainer"] {
@@ -1434,8 +1573,10 @@ def main() -> None:
                 min-height: 340px;
             }
             .st-key-chat_scroll {
-                height: calc(100dvh - 15.75rem) !important;
-                min-height: 260px;
+                height: auto !important;
+                min-height: 0;
+                max-height: none !important;
+                overflow: visible !important;
             }
             .st-key-ppt_chat_scroll {
                 height: calc(100dvh - 19rem) !important;
@@ -1872,27 +2013,27 @@ def main() -> None:
         }
         .st-key-chat_shell,
         .st-key-demo_panel {
-            height: calc(100dvh - 3.1rem);
+            min-height: calc(100dvh - 3.1rem);
+            height: auto;
             max-height: none;
-            min-height: 0;
             border-radius: 0;
             box-shadow: none;
             border: 0;
             background: #ffffff;
             padding: 0;
-            overflow: hidden;
+            overflow: visible;
         }
         .st-key-chat_shell {
-            display: flex !important;
-            flex-direction: column;
             position: relative !important;
-            height: 100% !important;
-            min-height: 0 !important;
-            padding-bottom: 108px !important;
+            height: auto !important;
+            min-height: calc(100dvh - 3.1rem) !important;
+            padding-bottom: 0 !important;
+            overflow: visible !important;
         }
         div:has(> .st-key-chat_shell) {
-            height: 100% !important;
-            min-height: 0 !important;
+            height: auto !important;
+            min-height: calc(100dvh - 3.1rem) !important;
+            overflow: visible !important;
         }
         .st-key-demo_panel {
             border-left: 1px solid var(--qa-line);
@@ -1914,6 +2055,8 @@ def main() -> None:
             background: #ffffff;
         }
         .chat-topbar {
+            width: min(100%, 1080px);
+            margin: 0 auto;
             padding: 0 1.1rem;
         }
         .demo-topbar {
@@ -1947,37 +2090,38 @@ def main() -> None:
             color: #4b5563;
         }
         .st-key-chat_scroll {
-            flex: 1 1 auto;
-            position: absolute !important;
-            left: 0 !important;
-            right: 0 !important;
-            top: 58px !important;
-            bottom: 108px !important;
+            position: relative !important;
+            left: auto !important;
+            right: auto !important;
+            top: auto !important;
+            bottom: auto !important;
             height: auto !important;
             min-height: 0;
-            overflow-y: auto !important;
+            max-height: none !important;
+            width: min(100%, 980px);
+            margin: 0 auto;
+            overflow: visible !important;
             overflow-x: hidden;
-            padding: 1rem 1.1rem 0.8rem;
-            scrollbar-gutter: stable;
-            -webkit-overflow-scrolling: touch;
+            padding: clamp(1.25rem, 7vh, 5.2rem) 1.1rem 1.2rem;
         }
         .chat-welcome {
-            max-width: 420px;
-            margin: 2rem auto;
-            padding: 1.1rem 1.2rem;
-            border: 1px dashed #cbd5e1;
-            border-radius: 12px;
-            background: #f8fafc;
+            max-width: 560px;
+            margin: 0 auto 1.5rem;
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
             text-align: center;
         }
         .chat-welcome-title {
             color: var(--qa-text);
-            font-weight: 800;
-            margin-bottom: 0.35rem;
+            font-size: 1.34rem;
+            font-weight: 760;
+            margin-bottom: 0.45rem;
         }
         .chat-welcome-copy {
             color: var(--qa-muted);
-            font-size: 0.92rem;
+            font-size: 0.96rem;
         }
         div[class*="st-key-msg_user_"],
         div[class*="st-key-msg_assistant_"] {
@@ -1994,7 +2138,7 @@ def main() -> None:
         }
         div[class*="st-key-msg_user_"] > div,
         div[class*="st-key-msg_assistant_"] > div {
-            max-width: min(78%, 760px);
+            max-width: min(82%, 760px);
         }
         div[class*="st-key-msg_user_"] [data-testid="stMarkdownContainer"],
         div[class*="st-key-msg_assistant_"] [data-testid="stMarkdownContainer"] {
@@ -2011,8 +2155,25 @@ def main() -> None:
         }
         div[class*="st-key-msg_assistant_"] [data-testid="stMarkdownContainer"] {
             border-bottom-left-radius: 5px;
-            background: var(--qa-soft);
+            background: transparent;
             color: var(--qa-text);
+            padding-left: 0;
+            padding-right: 0;
+        }
+        div[class*="st-key-msg_assistant_"] h1 {
+            font-size: 1.42rem !important;
+            line-height: 1.35 !important;
+            margin: 1.25rem 0 0.65rem !important;
+        }
+        div[class*="st-key-msg_assistant_"] h2 {
+            font-size: 1.22rem !important;
+            line-height: 1.4 !important;
+            margin: 1.05rem 0 0.55rem !important;
+        }
+        div[class*="st-key-msg_assistant_"] h3 {
+            font-size: 1.08rem !important;
+            line-height: 1.45 !important;
+            margin: 0.95rem 0 0.45rem !important;
         }
         div[class*="st-key-msg_user_"] [data-testid="stMarkdownContainer"] * {
             color: #ffffff !important;
@@ -2027,6 +2188,83 @@ def main() -> None:
         div[class*="st-key-msg_user_"] pre {
             border-radius: 10px;
             overflow: auto;
+        }
+        .st-key-ppt_chat_scroll {
+            height: min(640px, calc(100dvh - 15rem)) !important;
+            min-height: 360px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            -webkit-overflow-scrolling: touch;
+            padding: 0.75rem 0.65rem 0.9rem;
+            border: 1px solid var(--qa-line);
+            border-radius: 14px;
+            background: #ffffff;
+        }
+        div[class*="st-key-ppt_msg_user_"],
+        div[class*="st-key-ppt_msg_assistant_"] {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            margin: 0.35rem 0 0.65rem;
+        }
+        div[class*="st-key-ppt_msg_user_"] {
+            align-items: flex-end;
+        }
+        div[class*="st-key-ppt_msg_assistant_"] {
+            align-items: flex-start;
+        }
+        div[class*="st-key-ppt_msg_user_"] > div,
+        div[class*="st-key-ppt_msg_assistant_"] > div {
+            max-width: min(88%, 560px);
+        }
+        div[class*="st-key-ppt_msg_user_"] [data-testid="stMarkdownContainer"],
+        div[class*="st-key-ppt_msg_assistant_"] [data-testid="stMarkdownContainer"] {
+            border-radius: 15px;
+            padding: 0.62rem 0.78rem;
+            line-height: 1.6;
+            font-size: 0.9rem;
+            box-shadow: none;
+        }
+        div[class*="st-key-ppt_msg_user_"] [data-testid="stMarkdownContainer"] {
+            border-bottom-right-radius: 5px;
+            background: var(--qa-blue);
+            color: #ffffff;
+        }
+        div[class*="st-key-ppt_msg_user_"] [data-testid="stMarkdownContainer"] * {
+            color: #ffffff !important;
+        }
+        div[class*="st-key-ppt_msg_assistant_"] [data-testid="stMarkdownContainer"] {
+            border-bottom-left-radius: 5px;
+            background: transparent;
+            color: var(--qa-text);
+            padding-left: 0;
+            padding-right: 0;
+        }
+        div[class*="st-key-demo_open_"] .stButton > button,
+        div[class*="st-key-demo_open_"] button,
+        div[class*="st-key-ppt_demo_open_"] .stButton > button,
+        div[class*="st-key-ppt_demo_open_"] button {
+            min-height: 42px !important;
+            justify-content: center !important;
+            border: 1px solid #2563eb !important;
+            border-radius: 10px !important;
+            background: #2563eb !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+            transform: none !important;
+            font-weight: 760 !important;
+        }
+        div[class*="st-key-demo_open_"] .stButton > button:hover,
+        div[class*="st-key-demo_open_"] button:hover,
+        div[class*="st-key-ppt_demo_open_"] .stButton > button:hover,
+        div[class*="st-key-ppt_demo_open_"] button:hover {
+            background: #1d4ed8 !important;
+            border-color: #1d4ed8 !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+            transform: none !important;
         }
         div[class*="st-key-step_link_"] .stButton > button,
         div[class*="st-key-step_link_"] button {
@@ -2052,6 +2290,24 @@ def main() -> None:
             color: #64748b !important;
             opacity: 1 !important;
         }
+        [data-testid="stChatInput"] {
+            width: min(100% - 2rem, 900px) !important;
+            margin: 0 auto 1.05rem !important;
+        }
+        [data-testid="stChatInput"] > div {
+            border-radius: 18px !important;
+            background: #f3f4f6 !important;
+            border: 1px solid #e5e7eb !important;
+            box-shadow: none !important;
+        }
+        textarea[data-testid="stChatInputTextArea"] {
+            min-height: 50px !important;
+            font-size: 0.96rem !important;
+            line-height: 1.45 !important;
+        }
+        [data-testid="stChatInputSubmitButton"] {
+            border-radius: 999px !important;
+        }
         .typing-dots {
             display: inline-flex;
             align-items: center;
@@ -2073,46 +2329,6 @@ def main() -> None:
         @keyframes typing-bounce {
             0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
             40% { transform: translateY(-4px); opacity: 1; }
-        }
-        .st-key-question_form {
-            border-radius: 0;
-            border: 0;
-            box-shadow: none;
-            padding: 0.75rem 1.1rem;
-            background: #ffffff;
-        }
-        .st-key-chat_input_bar {
-            position: absolute !important;
-            left: 0 !important;
-            right: 0 !important;
-            bottom: 0 !important;
-            z-index: 5;
-            flex: 0 0 auto;
-            height: auto !important;
-            min-height: 0 !important;
-            border-top: 1px solid var(--qa-line);
-            background: #ffffff;
-        }
-        .st-key-chat_input_bar .st-key-question_form {
-            padding: 0.75rem 1.1rem;
-        }
-        .st-key-question_form textarea {
-            max-height: 120px;
-            min-height: 46px !important;
-            resize: vertical;
-            border-radius: 10px;
-        }
-        .st-key-question_form [data-testid="stFormSubmitButton"] button {
-            min-height: 46px;
-            border-radius: 10px;
-            background: var(--qa-blue);
-            color: #ffffff;
-            font-size: 0;
-        }
-        .st-key-question_form [data-testid="stFormSubmitButton"] button::after {
-            content: ">";
-            font-size: 1.05rem;
-            line-height: 1;
         }
         .demo-stage-wrap {
             flex: 1;
@@ -2207,25 +2423,6 @@ def main() -> None:
                 width: 100% !important;
                 flex: 1 1 100% !important;
             }
-            .st-key-chat_shell {
-                height: 60vh;
-                border-bottom: 1px solid var(--qa-line);
-            }
-            .st-key-demo_panel {
-                height: 40vh;
-                border-left: 0;
-                padding: 0.75rem;
-            }
-            .st-key-chat_scroll {
-                top: 52px !important;
-                bottom: 108px !important;
-                height: auto !important;
-                min-height: 0;
-            }
-            .chat-topbar {
-                height: 52px;
-                padding: 0 0.85rem;
-            }
             div[class*="st-key-msg_user_"] > div,
             div[class*="st-key-msg_assistant_"] > div {
                 max-width: 90%;
@@ -2272,6 +2469,9 @@ def main() -> None:
     if "dsvp_clarification" not in st.session_state:
         st.session_state.dsvp_clarification = None
 
+    if "demo_dialog_open" not in st.session_state:
+        st.session_state.demo_dialog_open = False
+
     if "is_generating" not in st.session_state:
         st.session_state.is_generating = False
 
@@ -2294,6 +2494,10 @@ def main() -> None:
         st.session_state.pending_rag_plan = {}
 
     load_persisted_messages()
+
+    if st.session_state.get("demo_dialog_open"):
+        st.session_state.demo_dialog_open = False
+        render_demo_dialog()
 
     api_ready = bool(os.getenv("DEEPSEEK_API_KEY"))
     api_label = "模型就绪" if api_ready else "缺少 API Key"
@@ -2368,51 +2572,32 @@ def main() -> None:
     qa_tab, mainline_tab, ppt_tab, knowledge_tab = st.tabs(["问答", "主线学习", "PPT学习模式", "知识库"])
 
     with qa_tab:
-        chat_col, demo_col = st.columns([1.35, 1], gap="large")
-
-        with demo_col:
-            demo_placeholder = st.empty()
-            with demo_placeholder.container():
-                with st.container(key="demo_panel"):
-                    render_current_trace_demo()
-
-        with chat_col:
-            with st.container(key="chat_shell"):
-                st.markdown(
-                    """
-                    <div class="chat-topbar">
-                        <div class="chat-title">自由提问</div>
-                        <div class="chat-mode-link">主线学习</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                with st.container(border=False, key="chat_scroll"):
-                    render_chat_messages(st.session_state.messages)
-                    if st.session_state.pending_question:
-                        st.markdown(
-                            """
-                            <div class="typing-dots" aria-label="AI 正在思考">
-                                <span></span><span></span><span></span>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-                    render_contexts(st.session_state.last_contexts)
-                with st.container(key="chat_input_bar"):
-                    with st.form("question_form", clear_on_submit=True):
-                        input_col, send_col = st.columns([1, 0.14], gap="small")
-                        with input_col:
-                            question = st.text_area(
-                                "提问",
-                                placeholder="输入你的问题，例如：解释一下冒泡排序",
-                                label_visibility="collapsed",
-                                height=46,
-                            )
-                        with send_col:
-                            submitted_question = st.form_submit_button("发送")
-            if not submitted_question:
-                question = ""
+        with st.container(key="chat_shell"):
+            st.markdown(
+                """
+                <div class="chat-topbar">
+                    <div class="chat-title">自由提问</div>
+                    <div class="chat-mode-link">演示会在消息里弹出</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.container(border=False, key="chat_scroll"):
+                render_chat_messages(st.session_state.messages)
+                if st.session_state.pending_question:
+                    st.markdown(
+                        """
+                        <div class="typing-dots" aria-label="AI 正在思考">
+                            <span></span><span></span><span></span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                render_contexts(st.session_state.last_contexts)
+        question = st.chat_input(
+            "输入你的问题，例如：解释一下冒泡排序",
+            key="question_input",
+        )
 
     with mainline_tab:
         with st.container(key="mainline_page"):
