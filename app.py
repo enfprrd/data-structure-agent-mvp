@@ -1433,34 +1433,37 @@ def render_current_trace_demo() -> None:
         unsafe_allow_html=True,
     )
 
-    prev_col, play_col, next_col = st.columns([0.24, 0.24, 0.24], gap="small")
-    with prev_col:
-        if st.button("‹ 上一步", disabled=current == 0, key="chat_demo_prev", width="stretch"):
-            st.session_state.dsvp_autoplay = False
-            st.session_state.dsvp_step = current - 1
-            rerun_demo_dialog()
-    with play_col:
-        play_label = "暂停" if st.session_state.get("dsvp_autoplay") else "播放"
-        if st.button(play_label, key="chat_demo_play", width="stretch"):
-            st.session_state.dsvp_autoplay = not bool(st.session_state.get("dsvp_autoplay"))
-            rerun_demo_dialog()
-    with next_col:
-        if st.button("下一步 ›", disabled=current == len(steps) - 1, key="chat_demo_next", width="stretch"):
-            st.session_state.dsvp_autoplay = False
-            st.session_state.dsvp_step = current + 1
-            rerun_demo_dialog()
+    if len(steps) > 1:
+        prev_col, play_col, next_col = st.columns([0.24, 0.24, 0.24], gap="small")
+        with prev_col:
+            if st.button("◀ 上一步", disabled=current == 0, key="chat_demo_prev", width="stretch"):
+                st.session_state.dsvp_autoplay = False
+                st.session_state.dsvp_step = current - 1
+                rerun_demo_dialog()
+        with play_col:
+            play_label = "暂停" if st.session_state.get("dsvp_autoplay") else "播放"
+            if st.button(play_label, key="chat_demo_play", width="stretch"):
+                st.session_state.dsvp_autoplay = not bool(st.session_state.get("dsvp_autoplay"))
+                rerun_demo_dialog()
+        with next_col:
+            if st.button("下一步 ▶", disabled=current == len(steps) - 1, key="chat_demo_next", width="stretch"):
+                st.session_state.dsvp_autoplay = False
+                st.session_state.dsvp_step = current + 1
+                rerun_demo_dialog()
 
-    jumped = st.slider(
-        "步骤进度",
-        min_value=1,
-        max_value=len(steps),
-        value=current + 1,
-        label_visibility="collapsed",
-    )
-    if jumped - 1 != current:
-        st.session_state.dsvp_autoplay = False
-        st.session_state.dsvp_step = jumped - 1
-        rerun_demo_dialog()
+        jumped = st.slider(
+            "步骤进度",
+            min_value=1,
+            max_value=len(steps),
+            value=current + 1,
+            label_visibility="collapsed",
+        )
+        if jumped - 1 != current:
+            st.session_state.dsvp_autoplay = False
+            st.session_state.dsvp_step = jumped - 1
+            rerun_demo_dialog()
+    else:
+        st.caption("当前只有 1 个步骤，已自动定位到第 1 步。")
 
     if st.session_state.get("dsvp_autoplay"):
         if current < len(steps) - 1:
