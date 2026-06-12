@@ -8,9 +8,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageFont
 from conversation_context import format_message_history
 from llm import DeepSeekClient, DeepSeekError
 from rag import MarkdownKeywordRetriever
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import PP_ALIGN
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]+")
@@ -91,6 +94,19 @@ def render_pptx_slide_images(
     if existing:
         return [str(path) for path in existing]
 
+    rendered = _render_pptx_slide_images_with_powerpoint(deck_id, pptx_bytes, output_dir, width, height)
+    if rendered:
+        return rendered
+    return _render_pptx_slide_images_with_pillow(deck_id, pptx_bytes, output_dir, width, height)
+
+
+def _render_pptx_slide_images_with_powerpoint(
+    deck_id: str,
+    pptx_bytes: bytes,
+    output_dir: Path,
+    width: int,
+    height: int,
+) -> list[str]:
     try:
         import pythoncom
         import win32com.client
@@ -134,6 +150,40 @@ def render_pptx_slide_images(
             pythoncom.CoUninitialize()
 
 
+def _render_pptx_slide_images_with_pillow(
+    deck_id: str,
+    pptx_bytes: bytes,
+    output_dir: Path,
+    width: int,
+    height: int,
+) -> list[str]:
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return []
+
+    try:
+        presentation = Presentation(BytesIO(pptx_bytes))
+    except Exception:
+        return []
+
+    slide_width_px, slide_height_px = width, height
+    slide_width_emu = presentation.slide_width
+    slide_height_emu = presentation.slide_height
+
+    rendered: list[str] = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        image = Image.new("RGB", (slide_width_px, slide_height_px), "white")
+        draw = ImageDraw.Draw(image)
+        _draw_ppt_slide_background(draw, slide, slide_width_px, slide_height_px)
+        for shape in slide.shapes:
+            _draw_ppt_shape(draw, image, shape, slide_width_px, slide_height_px, slide_width_emu, slide_height_emu)
+        image_path = output_dir / f"slide_{index:03d}.png"
+        image.save(image_path)
+        rendered.append(str(image_path))
+    return rendered
+
+
 def discover_local_pptx_files(directory: Path | str) -> list[Path]:
     base = Path(directory)
     if not base.exists() or not base.is_dir():
@@ -142,6 +192,362 @@ def discover_local_pptx_files(directory: Path | str) -> list[Path]:
         [path for path in base.iterdir() if path.is_file() and path.suffix.lower() == ".pptx"],
         key=lambda path: path.name.lower(),
     )
+
+
+def _draw_ppt_slide_background(draw: ImageDraw.ImageDraw, slide: Any, width: int, height: int) -> None:
+    try:
+        background = slide.background
+        fill = background.fill
+        if getattr(fill, "type", None) and getattr(fill, "fore_color", None) is not None:
+            color = getattr(fill.fore_color, "rgb", None)
+            if color is not None:
+                draw.rectangle((0, 0, width, height), fill=f"#{color}")
+    except Exception:
+        return
+
+
+def _draw_ppt_shape(
+    draw: ImageDraw.ImageDraw,
+    image: Image.Image,
+    shape: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> None:
+    if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PLACEHOLDER:
+        if getattr(shape, "has_text_frame", False):
+            _draw_ppt_text_frame(draw, shape, width, height, slide_width_emu, slide_height_emu)
+        return
+
+    if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+        _draw_ppt_picture(image, shape, width, height, slide_width_emu, slide_height_emu)
+        return
+
+    if getattr(shape, "has_table", False):
+        _draw_ppt_table(draw, shape.table, width, height, slide_width_emu, slide_height_emu)
+        return
+
+    if getattr(shape, "has_text_frame", False):
+        _draw_ppt_text_frame(draw, shape, width, height, slide_width_emu, slide_height_emu)
+        return
+
+    # Basic fallback for simple auto-shapes.
+    try:
+        left, top, right, bottom = _shape_box(shape, width, height, slide_width_emu, slide_height_emu)
+    except Exception:
+        return
+    try:
+        fill = getattr(shape.fill, "fore_color", None)
+        fill_color = f"#{fill.rgb}" if fill is not None and getattr(fill, "rgb", None) is not None else None
+    except Exception:
+        fill_color = None
+    try:
+        line = getattr(shape.line, "color", None)
+        line_color = f"#{line.rgb}" if line is not None and getattr(line, "rgb", None) is not None else "#d1d5db"
+    except Exception:
+        line_color = "#d1d5db"
+    draw.rectangle((left, top, right, bottom), fill=fill_color, outline=line_color, width=2)
+
+
+def _draw_ppt_picture(
+    image: Image.Image,
+    shape: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> None:
+    try:
+        from PIL import Image as PILImage
+    except Exception:
+        return
+
+    try:
+        left, top, right, bottom = _shape_box(shape, width, height, slide_width_emu, slide_height_emu)
+        blob = shape.image.blob
+        picture = PILImage.open(BytesIO(blob)).convert("RGBA")
+        box_width = max(1, right - left)
+        box_height = max(1, bottom - top)
+        picture.thumbnail((box_width, box_height), PILImage.Resampling.LANCZOS)
+        offset_x = left + max(0, (box_width - picture.width) // 2)
+        offset_y = top + max(0, (box_height - picture.height) // 2)
+        image.paste(picture, (offset_x, offset_y), picture)
+    except Exception:
+        return
+
+
+def _draw_ppt_table(
+    draw: ImageDraw.ImageDraw,
+    table: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> None:
+    try:
+        rows = list(table.rows)
+        cols = list(table.columns)
+        if not rows or not cols:
+            return
+        left, top, right, bottom = _table_box(table, width, height, slide_width_emu, slide_height_emu)
+        box_width = max(1, right - left)
+        box_height = max(1, bottom - top)
+        row_heights = [box_height / len(rows)] * len(rows)
+        col_widths = [box_width / len(cols)] * len(cols)
+        y = top
+        for row_index, row in enumerate(rows):
+            x = left
+            row_height = row_heights[row_index]
+            for col_index, cell in enumerate(row.cells):
+                cell_width = col_widths[col_index]
+                cell_box = (x, y, x + cell_width, y + row_height)
+                draw.rectangle(cell_box, fill="white", outline="#d1d5db", width=1)
+                _draw_cell_text(draw, cell.text, cell_box, default_size=16, align="left")
+                x += cell_width
+            y += row_height
+    except Exception:
+        return
+
+
+def _draw_ppt_text_frame(
+    draw: ImageDraw.ImageDraw,
+    shape: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> None:
+    try:
+        left, top, right, bottom = _shape_box(shape, width, height, slide_width_emu, slide_height_emu)
+        text_frame = shape.text_frame
+        paragraphs = list(text_frame.paragraphs)
+        if not paragraphs:
+            return
+        padding_left = _emu_to_px(getattr(text_frame, "margin_left", 0), slide_width_emu, width)
+        padding_right = _emu_to_px(getattr(text_frame, "margin_right", 0), slide_width_emu, width)
+        padding_top = _emu_to_px(getattr(text_frame, "margin_top", 0), slide_height_emu, height)
+        padding_bottom = _emu_to_px(getattr(text_frame, "margin_bottom", 0), slide_height_emu, height)
+        inner = (
+            left + padding_left,
+            top + padding_top,
+            max(left + padding_left + 1, right - padding_right),
+            max(top + padding_top + 1, bottom - padding_bottom),
+        )
+        lines: list[tuple[str, dict[str, Any]]] = []
+        for paragraph in paragraphs:
+            text = "".join(run.text for run in paragraph.runs).strip() or paragraph.text.strip()
+            if not text:
+                continue
+            line_meta = {
+                "size": _paragraph_font_size(paragraph),
+                "bold": _paragraph_is_bold(paragraph),
+                "italic": _paragraph_is_italic(paragraph),
+                "color": _paragraph_color(paragraph),
+                "align": paragraph.alignment or PP_ALIGN.LEFT,
+            }
+            lines.append((text, line_meta))
+        if not lines:
+            return
+        _draw_wrapped_text_block(draw, lines, inner)
+    except Exception:
+        return
+
+
+def _draw_cell_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box: tuple[float, float, float, float],
+    default_size: int = 16,
+    align: str = "center",
+) -> None:
+    lines = [(line, {"size": default_size, "bold": False, "italic": False, "color": "#111827", "align": PP_ALIGN.LEFT}) for line in text.splitlines() if line.strip()]
+    if not lines and text.strip():
+        lines = [(text.strip(), {"size": default_size, "bold": False, "italic": False, "color": "#111827", "align": PP_ALIGN.LEFT})]
+    if lines:
+        _draw_wrapped_text_block(draw, lines, box, force_align=align)
+
+
+def _draw_wrapped_text_block(
+    draw: ImageDraw.ImageDraw,
+    lines: list[tuple[str, dict[str, Any]]],
+    box: tuple[float, float, float, float],
+    force_align: str | None = None,
+) -> None:
+    left, top, right, bottom = map(int, box)
+    max_width = max(1, right - left)
+    max_height = max(1, bottom - top)
+    fitted: list[tuple[str, ImageFont.FreeTypeFont, str, str]] = []
+    for text, meta in lines:
+        font_size = max(12, int(meta.get("size") or 16))
+        font = _load_ppt_font(font_size, bool(meta.get("bold")), bool(meta.get("italic")))
+        wrapped = _wrap_text(draw, text, font, max_width)
+        if not wrapped:
+            wrapped = [text]
+        align = force_align or _alignment_to_name(meta.get("align"))
+        color = str(meta.get("color") or "#111827")
+        fitted.append(("\n".join(wrapped), font, align, color))
+
+    total_height = sum(_measure_multiline(draw, text, font, max_width)[1] + 6 for text, font, _, _ in fitted)
+    scale = min(1.0, max_height / max(total_height, 1))
+    if scale < 1.0:
+        resized: list[tuple[str, ImageFont.FreeTypeFont, str, str]] = []
+        for text, font, align, color in fitted:
+            target_size = max(12, int(round(_font_size_px(font) * scale)))
+            resized.append((text, _load_ppt_font(target_size, font.path.endswith("b.ttf") if getattr(font, "path", "") else False, False), align, color))
+        fitted = resized
+
+    cursor_y = top
+    for text, font, align, color in fitted:
+        text_width, text_height = _measure_multiline(draw, text, font, max_width)
+        if align == "center":
+            x = left + max(0, (max_width - text_width) // 2)
+        elif align == "right":
+            x = left + max(0, max_width - text_width)
+        else:
+            x = left
+        y = cursor_y
+        draw.multiline_text((x, y), text, fill=color, font=font, spacing=4)
+        cursor_y += text_height + 6
+
+
+def _shape_box(
+    shape: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> tuple[int, int, int, int]:
+    return (
+        _emu_to_px(getattr(shape, "left", 0), slide_width_emu, width),
+        _emu_to_px(getattr(shape, "top", 0), slide_height_emu, height),
+        _emu_to_px(getattr(shape, "left", 0) + getattr(shape, "width", 0), slide_width_emu, width),
+        _emu_to_px(getattr(shape, "top", 0) + getattr(shape, "height", 0), slide_height_emu, height),
+    )
+
+
+def _table_box(
+    table: Any,
+    width: int,
+    height: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+) -> tuple[int, int, int, int]:
+    parent = getattr(table, "_parent", None)
+    if parent is not None:
+        return _shape_box(parent, width, height, slide_width_emu, slide_height_emu)
+    return (0, 0, width, height)
+
+
+def _emu_to_px(value: Any, axis_total_emu: int, axis_pixels: int) -> int:
+    try:
+        if axis_total_emu == 0:
+            return 0
+        return int(round(float(value) / float(axis_total_emu) * axis_pixels))
+    except Exception:
+        return 0
+
+
+def _paragraph_font_size(paragraph: Any, default: int = 20) -> int:
+    for run in paragraph.runs:
+        size = getattr(getattr(run, "font", None), "size", None)
+        if size is not None:
+            try:
+                return max(10, int(round(size.pt * 96 / 72)))
+            except Exception:
+                continue
+    return default
+
+
+def _paragraph_is_bold(paragraph: Any) -> bool:
+    for run in paragraph.runs:
+        if getattr(getattr(run, "font", None), "bold", None):
+            return True
+    return False
+
+
+def _paragraph_is_italic(paragraph: Any) -> bool:
+    for run in paragraph.runs:
+        if getattr(getattr(run, "font", None), "italic", None):
+            return True
+    return False
+
+
+def _paragraph_color(paragraph: Any) -> str:
+    for run in paragraph.runs:
+        font = getattr(run, "font", None)
+        color = getattr(font, "color", None)
+        rgb = getattr(color, "rgb", None)
+        if rgb is not None:
+            return f"#{rgb}"
+    return "#111827"
+
+
+def _alignment_to_name(value: Any) -> str:
+    if value in {PP_ALIGN.CENTER, "center"}:
+        return "center"
+    if value in {PP_ALIGN.RIGHT, "right"}:
+        return "right"
+    return "left"
+
+
+def _load_ppt_font(size_px: int, bold: bool = False, italic: bool = False) -> ImageFont.FreeTypeFont:
+    candidates = [
+        (r"C:\\Windows\\Fonts\\msyhbd.ttc" if bold else r"C:\\Windows\\Fonts\\msyh.ttc"),
+        (r"C:\\Windows\\Fonts\\simhei.ttf" if bold else r"C:\\Windows\\Fonts\\simhei.ttf"),
+        (r"C:\\Windows\\Fonts\\Noto Sans SC Bold (TrueType).otf" if bold else r"C:\\Windows\\Fonts\\Noto Sans SC (TrueType).otf"),
+        (r"C:\\Windows\\Fonts\\arialbd.ttf" if bold else r"C:\\Windows\\Fonts\\arial.ttf"),
+    ]
+    for path in candidates:
+        font_path = Path(path)
+        if font_path.exists():
+            try:
+                return ImageFont.truetype(str(font_path), size=max(12, size_px))
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _font_size_px(font: ImageFont.FreeTypeFont) -> int:
+    try:
+        return int(round(font.size))
+    except Exception:
+        return 16
+
+
+def _measure_multiline(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> tuple[int, int]:
+    wrapped = _wrap_text(draw, text, font, max_width) or [text]
+    bbox = draw.multiline_textbbox((0, 0), "\n".join(wrapped), font=font, spacing=4)
+    return max(1, int(bbox[2] - bbox[0])), max(1, int(bbox[3] - bbox[1]))
+
+
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    paragraphs = text.splitlines() or [text]
+    wrapped: list[str] = []
+    for paragraph in paragraphs:
+        stripped = paragraph.strip()
+        if not stripped:
+            wrapped.append("")
+            continue
+        tokens = stripped.split()
+        if len(tokens) == 1:
+            tokens = list(stripped)
+        current = ""
+        for token in tokens:
+            candidate = token if not current else f"{current} {token}" if " " in stripped else f"{current}{token}"
+            if _text_width(draw, candidate, font) <= max_width or not current:
+                current = candidate
+            else:
+                wrapped.append(current)
+                current = token
+        if current:
+            wrapped.append(current)
+    return wrapped
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return max(1, int(bbox[2] - bbox[0]))
 
 
 def build_context_pack(

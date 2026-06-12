@@ -704,6 +704,14 @@ def render_ppt_learning_mode() -> None:
             output_root=PPT_PREVIEW_DIR,
         )
 
+    slide_images = list(st.session_state.get("ppt_slide_images") or [])
+    if not slide_images or len(slide_images) != len(st.session_state.get("ppt_slide_cards") or []):
+        st.session_state.ppt_slide_images = render_pptx_slide_images(
+            deck_id=deck_hash,
+            pptx_bytes=pptx_bytes,
+            output_root=PPT_PREVIEW_DIR,
+        )
+
     slide_cards = list(st.session_state.get("ppt_slide_cards") or [])
     if not slide_cards:
         st.warning("这份 PPT 没有解析出可用页。")

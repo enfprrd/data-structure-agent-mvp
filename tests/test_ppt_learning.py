@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+import ppt_learning as ppt_module
+
 from ppt_learning import (
     SlideCard,
     build_context_pack,
     discover_local_pptx_files,
+    render_pptx_slide_images,
     parse_pptx_to_slide_cards,
 )
 
@@ -90,3 +93,21 @@ def test_discover_local_pptx_files_only_returns_pptx_files(tmp_path: Path) -> No
     discovered = discover_local_pptx_files(tmp_path)
 
     assert [path.name for path in discovered] == ["a.pptx", "b.PPTX"]
+
+
+def test_render_pptx_slide_images_falls_back_when_powerpoint_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    presentation = pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(0, 0, 2000000, 1000000).text_frame.text = "fallback render"
+    pptx_path = tmp_path / "fallback.pptx"
+    presentation.save(str(pptx_path))
+
+    monkeypatch.setattr(ppt_module, "_render_pptx_slide_images_with_powerpoint", lambda *args, **kwargs: [])
+
+    images = render_pptx_slide_images("fallback-deck", pptx_path.read_bytes(), tmp_path)
+
+    assert len(images) == 1
+    assert Path(images[0]).exists()
