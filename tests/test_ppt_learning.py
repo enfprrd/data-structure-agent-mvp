@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-import sys
-import types
 
 import pytest
 
@@ -95,7 +93,7 @@ def test_discover_local_pptx_files_only_returns_pptx_files(tmp_path: Path) -> No
     assert [path.name for path in discovered] == ["a.pptx", "b.PPTX"]
 
 
-def test_render_pptx_slide_images_uses_powerpoint_export_path(
+def test_render_pptx_slide_images_falls_back_to_soffice(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,44 +106,14 @@ def test_render_pptx_slide_images_uses_powerpoint_export_path(
     pptx_path = tmp_path / "render.pptx"
     presentation.save(str(pptx_path))
 
-    class DummySlide:
-        def Export(self, image_path: str, image_format: str, width: int, height: int) -> None:  # noqa: N802
-            Path(image_path).write_bytes(b"fake-png")
+    monkeypatch.setattr("ppt_learning._render_pptx_slide_images_with_powerpoint", lambda *args, **kwargs: [])
 
-    class DummySlides:
-        Count = 1
+    def fake_soffice(deck_id: str, pptx_bytes: bytes, output_dir: Path, width: int, height: int) -> list[str]:
+        image_path = output_dir / "slide_001.png"
+        image_path.write_bytes(b"fake-png")
+        return [str(image_path)]
 
-        def __call__(self, index: int) -> DummySlide:
-            return DummySlide()
-
-    class DummyPresentation:
-        Slides = DummySlides()
-
-        def Close(self) -> None:  # noqa: N802
-            pass
-
-    class DummyPresentations:
-        def Open(self, *args, **kwargs) -> DummyPresentation:  # noqa: N802
-            return DummyPresentation()
-
-    class DummyPowerPoint:
-        Presentations = DummyPresentations()
-
-        def Quit(self) -> None:  # noqa: N802
-            pass
-
-    pythoncom = types.ModuleType("pythoncom")
-    pythoncom.CoInitialize = lambda: None
-    pythoncom.CoUninitialize = lambda: None
-
-    win32com = types.ModuleType("win32com")
-    client = types.ModuleType("win32com.client")
-    client.DispatchEx = lambda *args, **kwargs: DummyPowerPoint()
-    win32com.client = client
-
-    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
-    monkeypatch.setitem(sys.modules, "win32com", win32com)
-    monkeypatch.setitem(sys.modules, "win32com.client", client)
+    monkeypatch.setattr("ppt_learning._render_pptx_slide_images_with_soffice", fake_soffice)
 
     images = render_pptx_slide_images("render-deck", pptx_path.read_bytes(), saved)
 

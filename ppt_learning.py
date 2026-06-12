@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
+import shutil
 from pathlib import Path
 from typing import Any
+
+try:
+    import fitz
+except ImportError:  # pragma: no cover - optional dependency for deployment
+    fitz = None
 
 from conversation_context import format_message_history
 from llm import DeepSeekClient, DeepSeekError
@@ -89,6 +96,19 @@ def render_pptx_slide_images(
         except Exception:
             pass
 
+    rendered = _render_pptx_slide_images_with_powerpoint(deck_id, pptx_bytes, output_dir, width, height)
+    if rendered:
+        return rendered
+    return _render_pptx_slide_images_with_soffice(deck_id, pptx_bytes, output_dir, width, height)
+
+
+def _render_pptx_slide_images_with_powerpoint(
+    deck_id: str,
+    pptx_bytes: bytes,
+    output_dir: Path,
+    width: int,
+    height: int,
+) -> list[str]:
     try:
         import pythoncom
         import win32com.client
@@ -130,7 +150,63 @@ def render_pptx_slide_images(
                 except Exception:
                     pass
             pythoncom.CoUninitialize()
-    return []
+
+
+def _render_pptx_slide_images_with_soffice(
+    deck_id: str,
+    pptx_bytes: bytes,
+    output_dir: Path,
+    width: int,
+    height: int,
+) -> list[str]:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        return []
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="ppt_render_") as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            temp_path = temp_dir_path / f"{deck_id}.pptx"
+            temp_path.write_bytes(pptx_bytes)
+            pdf_dir = temp_dir_path / "pdf"
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+
+            result = subprocess.run(
+                [
+                    soffice,
+                    "--headless",
+                    "--nologo",
+                    "--nolockcheck",
+                    "--nofirststartwizard",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(pdf_dir),
+                    str(temp_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pdf_path = pdf_dir / f"{deck_id}.pdf"
+            if result.returncode != 0 or not pdf_path.exists() or fitz is None:
+                return []
+
+            document = fitz.open(pdf_path)
+            try:
+                rendered: list[str] = []
+                for index in range(document.page_count):
+                    page = document.load_page(index)
+                    matrix = fitz.Matrix(width / page.rect.width, width / page.rect.width)
+                    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                    image_path = output_dir / f"slide_{index + 1:03d}.png"
+                    pixmap.save(str(image_path))
+                    rendered.append(str(image_path))
+                return rendered
+            finally:
+                document.close()
+    except Exception:
+        return []
 
 
 def discover_local_pptx_files(directory: Path | str) -> list[Path]:
